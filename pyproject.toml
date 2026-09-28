@@ -1,0 +1,146 @@
+[project]
+name = "mu-space"
+description = "MUSA Spatial and Physical AI Compute Engine"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10,<4"
+authors = [{ name = "muSPACE Contributors" }]
+keywords = ["musa", "autonomous-driving", "spatial-ai", "pytorch", "operators"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dynamic = ["version"]
+dependencies = [
+    "apache-tvm-ffi>=0.1.9.post3",
+    "click>=8",
+    "packaging>=24",
+    "pyyaml>=6",
+    "torch>=2.7,<3",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+dev = ["pytest>=8", "ruff>=0.5", "pre-commit>=2.21"]
+
+[project.urls]
+Homepage = "https://github.com/MooreThreads/muSPACE"
+Repository = "https://github.com/MooreThreads/muSPACE"
+Documentation = "https://github.com/MooreThreads/muSPACE/tree/main/docs"
+
+[project.scripts]
+mu-space = "mu_space.__main__:cli"
+
+[build-system]
+requires = ["setuptools>=77", "wheel", "ninja", "apache-tvm-ffi>=0.1.9.post3"]
+build-backend = "build_backend"
+backend-path = ["."]
+
+[tool.setuptools.dynamic]
+version = { attr = "mu_space._version.__version__" }
+
+[tool.setuptools]
+include-package-data = true
+py-modules = ["build_backend", "build_utils"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mu_space*"]
+
+[tool.setuptools.package-data]
+"mu_space" = ["_version.py", "native/*.so"]
+
+[tool.setuptools.data-files]
+"share/mu-space/model_examples/BEVFusion" = [
+    "model_examples/BEVFusion/manifest.yaml",
+    "model_examples/BEVFusion/requirements.lock",
+]
+"share/mu-space/model_examples/BEVFusion/patches" = [
+    "model_examples/BEVFusion/patches/use-muspace-sigmoid-focal-loss.patch",
+]
+"share/mu-space/model_examples/BEVDepth" = [
+    "model_examples/BEVDepth/manifest.yaml",
+    "model_examples/BEVDepth/requirements.lock",
+    "model_examples/BEVDepth/requirements-runtime.lock",
+]
+"share/mu-space/model_examples/BEVFormer" = [
+    "model_examples/BEVFormer/manifest.yaml",
+    "model_examples/BEVFormer/requirements.lock",
+]
+"share/mu-space/model_examples/BEVFormer/patches" = [
+    "model_examples/BEVFormer/patches/bevformer-01-musa-device-reference-msda.patch",
+    "model_examples/BEVFormer/patches/bevformer-02-training-compat.patch",
+    "model_examples/BEVFormer/patches/deps-mmcv-full-1.4.0.patch",
+    "model_examples/BEVFormer/patches/deps-mmdet3d-0.17.1.patch",
+]
+"share/mu-space/model_examples/FlashOCC" = [
+    "model_examples/FlashOCC/manifest.yaml",
+    "model_examples/FlashOCC/requirements.lock",
+]
+"share/mu-space/model_examples/FlashOCC/patches" = [
+    "model_examples/FlashOCC/patches/flashocc-01-bev-pool-v2-import.patch",
+    "model_examples/FlashOCC/patches/flashocc-02-bev-pool-legacy-import.patch",
+    "model_examples/FlashOCC/patches/flashocc-03-nearest-assign-import.patch",
+    "model_examples/FlashOCC/patches/flashocc-04-float32-pose-transforms.patch",
+    "model_examples/FlashOCC/patches/flashocc-05-lazy-ray-metrics-extension.patch",
+]
+"share/mu-space/model_examples/MapTRv2" = [
+    "model_examples/MapTRv2/manifest.yaml",
+    "model_examples/MapTRv2/requirements.lock",
+]
+"share/mu-space/model_examples/MapTRv2/patches" = [
+    "model_examples/MapTRv2/patches/maptrv2-01-musa-operators.patch",
+]
+"share/mu-space/model_examples/UniAD" = [
+    "model_examples/UniAD/manifest.yaml",
+    "model_examples/UniAD/requirements.lock",
+]
+"share/mu-space/model_examples/UniAD/patches" = [
+    "model_examples/UniAD/patches/uniad-01-mmdet-registry-collision.patch",
+    "model_examples/UniAD/patches/uniad-02-dice-loss-registry.patch",
+    "model_examples/UniAD/patches/uniad-03-numpy-bool-alias.patch",
+    "model_examples/UniAD/patches/uniad-04-shapely2-map-api.patch",
+    "model_examples/UniAD/patches/uniad-05-matplotlib-style.patch",
+    "model_examples/UniAD/patches/uniad-06-occ-metrics-backend.patch",
+    "model_examples/UniAD/patches/uniad-07-planning-metrics.patch",
+    "model_examples/UniAD/patches/uniad-08-dataset-fileclient.patch",
+    "model_examples/UniAD/patches/uniad-09-grid-mask-device.patch",
+    "model_examples/UniAD/patches/uniad-10-panseg-assigner-device.patch",
+    "model_examples/UniAD/patches/uniad-11-remove-debug-imports.patch",
+]
+"share/mu-space/model_examples/SparseDrive" = [
+    "model_examples/SparseDrive/manifest.yaml",
+]
+"share/mu-space/model_examples/OpenVLA" = [
+    "model_examples/OpenVLA/manifest.yaml",
+    "model_examples/OpenVLA/requirements.lock",
+]
+"share/mu-space/model_examples/OpenVLA/patches" = [
+    "model_examples/OpenVLA/patches/openvla-01-musa-single-card-finetune.patch",
+]
+"share/mu-space/model_examples/QCNet" = [
+    "model_examples/QCNet/manifest.yaml",
+    "model_examples/QCNet/requirements.lock",
+]
+"share/mu-space/model_examples/QCNet/patches" = [
+    "model_examples/QCNet/patches/qcnet-01-musa-radius.patch",
+]
+"share/mu-space/model_examples/LingBotVA" = [
+    "model_examples/LingBotVA/manifest.yaml",
+    "model_examples/LingBotVA/requirements.lock",
+]
+"share/mu-space/model_examples/LingBotVA/patches" = [
+    "model_examples/LingBotVA/patches/lingbot-va-01-musa-runtime.patch",
+    "model_examples/LingBotVA/patches/lingbot-va-02-musa-attention-flex.patch",
+    "model_examples/LingBotVA/patches/lingbot-va-03-training-entrypoint.patch",
+    "model_examples/LingBotVA/patches/lingbot-va-04-rope-fusion-and-fsdp-tuning.patch",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

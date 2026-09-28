@@ -1,0 +1,15 @@
+# Install project wheels built by model_examples/BEVFormer/scripts/build_openmmlab_compat_wheels.sh first.
+setuptools==80.9.0
+numpy==1.24.0
+mmcv-full==1.4.0
+mmdet==2.14.0
+mmsegmentation==0.14.1
+mmdet3d==0.17.1
+opencv-python-headless==4.11.0.86
+yapf==0.40.1
+networkx==2.8.8
+numba==0.57.1
+scipy==1.10.1
+scikit-image==0.21.0
+pandas==2.0.3
+trimesh==4.8.3

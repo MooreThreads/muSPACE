@@ -1,0 +1,15 @@
+name: OpenVLA
+repository: https://github.com/openvla/openvla.git
+reference_branch: main
+reference_commit: c8f03f48af692657d3060c19588038c7220e9af9
+default_checkout: OpenVLA
+integration:
+  maintains_fork: false
+  training_entrypoint: model_examples/OpenVLA/scripts/train_step_musa.py
+  validation_entrypoint: model_examples/OpenVLA/scripts/validate_fixture.sh
+  strict_backend: musa
+patch_marker: .mu_space_openvla.json
+patches:
+  - path: patches/openvla-01-musa-single-card-finetune.patch
+    sha256: 6a8ad01bd02054ae0f7fbab8fdf0457c6d9653dd8abc6eadd9e909bf25e47cb2
+    scope: musa_single_card_finetune

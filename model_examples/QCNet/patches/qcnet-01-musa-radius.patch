@@ -1,0 +1,54 @@
+diff --git a/modules/qcnet_agent_encoder.py b/modules/qcnet_agent_encoder.py
+--- a/modules/qcnet_agent_encoder.py
++++ b/modules/qcnet_agent_encoder.py
+@@ -18,2 +18,2 @@
+-from torch_cluster import radius
+-from torch_cluster import radius_graph
++from mu_space.qcnet_compat import radius
++from mu_space.qcnet_compat import radius_graph
+diff --git a/modules/qcnet_map_encoder.py b/modules/qcnet_map_encoder.py
+--- a/modules/qcnet_map_encoder.py
++++ b/modules/qcnet_map_encoder.py
+@@ -18 +18 @@
+-from torch_cluster import radius_graph
++from mu_space.qcnet_compat import radius_graph
+diff --git a/modules/qcnet_decoder.py b/modules/qcnet_decoder.py
+--- a/modules/qcnet_decoder.py
++++ b/modules/qcnet_decoder.py
+@@ -20,2 +20,2 @@
+-from torch_cluster import radius
+-from torch_cluster import radius_graph
++from mu_space.qcnet_compat import radius
++from mu_space.qcnet_compat import radius_graph
+diff --git a/losses/mixture_nll_loss.py b/losses/mixture_nll_loss.py
+--- a/losses/mixture_nll_loss.py
++++ b/losses/mixture_nll_loss.py
+@@ -19 +19 @@
+-from torch_scatter import segment_csr
++from mu_space.qcnet_compat import segment_csr
+diff --git a/losses/mixture_of_gaussian_nll_loss.py b/losses/mixture_of_gaussian_nll_loss.py
+--- a/losses/mixture_of_gaussian_nll_loss.py
++++ b/losses/mixture_of_gaussian_nll_loss.py
+@@ -19 +19 @@
+-from torch_scatter import segment_csr
++from mu_space.qcnet_compat import segment_csr
+diff --git a/losses/mixture_of_laplace_nll_loss.py b/losses/mixture_of_laplace_nll_loss.py
+--- a/losses/mixture_of_laplace_nll_loss.py
++++ b/losses/mixture_of_laplace_nll_loss.py
+@@ -19 +19 @@
+-from torch_scatter import segment_csr
++from mu_space.qcnet_compat import segment_csr
+diff --git a/losses/mixture_of_von_mises_nll_loss.py b/losses/mixture_of_von_mises_nll_loss.py
+--- a/losses/mixture_of_von_mises_nll_loss.py
++++ b/losses/mixture_of_von_mises_nll_loss.py
+@@ -19 +19 @@
+-from torch_scatter import segment_csr
++from mu_space.qcnet_compat import segment_csr
+diff --git a/metrics/utils.py b/metrics/utils.py
+--- a/metrics/utils.py
++++ b/metrics/utils.py
+@@ -17,2 +17,2 @@
+-from torch_scatter import gather_csr
+-from torch_scatter import segment_csr
++from mu_space.qcnet_compat import gather_csr
++from mu_space.qcnet_compat import segment_csr

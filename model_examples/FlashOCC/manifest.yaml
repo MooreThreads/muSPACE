@@ -1,0 +1,27 @@
+name: FlashOcc
+repository: https://github.com/Yzichen/FlashOCC.git
+reference_branch: master
+reference_commit: 449dc7947d6549ccb72a99d6f6d8c02f166ec0dd
+default_checkout: FlashOCC
+integration:
+  maintains_fork: false
+  operator: bev_pool_v2
+  runtime_patcher: mu_space.patcher.flashocc_patcher
+  strict_backend: musa
+patch_marker: .mu_space_flashocc.json
+patches:
+  - path: patches/flashocc-01-bev-pool-v2-import.patch
+    sha256: bb7faf76ae3ad1ff26d91928bab06ba540d501be844b9363879d3d00c336cbc2
+    scope: bev_pool_v2_import_guard
+  - path: patches/flashocc-02-bev-pool-legacy-import.patch
+    sha256: 0c798a306a664856aea4e0fbb636a391d29d0e87fb934f67139130858ba3b9dc
+    scope: legacy_bev_pool_import_guard
+  - path: patches/flashocc-03-nearest-assign-import.patch
+    sha256: ee1fbf1c69ee4efec6a8f66a55209e2c8b202249aa84687e6cf221e8fc4625e9
+    scope: nearest_assign_import_guard
+  - path: patches/flashocc-04-float32-pose-transforms.patch
+    sha256: e3929951872836ed6624a27a76fd9a3a67d5ad20b8dcdedccd59ff65a211e3b0
+    scope: float32_pose_transforms
+  - path: patches/flashocc-05-lazy-ray-metrics-extension.patch
+    sha256: bda7c9765c69cf1d9301fbbc9e8eb7f59f5ab1f5c756e3ef18ea79a41d160adc
+    scope: lazy_ray_metrics_extension

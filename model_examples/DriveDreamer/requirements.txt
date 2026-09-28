@@ -1,0 +1,2 @@
+# Compatibility alias; the pinned recipe dependency list lives in requirements.lock.
+-r requirements.lock

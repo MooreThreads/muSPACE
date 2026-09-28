@@ -1,0 +1,132 @@
+diff --git a/setup.py b/setup.py
+--- a/setup.py
++++ b/setup.py
+@@ -221,7 +221,7 @@ if __name__ == '__main__':
+             'build': parse_requirements('requirements/build.txt'),
+             'optional': parse_requirements('requirements/optional.txt'),
+         },
+-        ext_modules=[
++        ext_modules=[] if os.getenv('MMDET3D_WITH_OPS', '1') == '0' else [
+             make_cuda_ext(
+                 name='sparse_conv_ext',
+                 module='mmdet3d.ops.spconv',
+diff --git a/mmdet3d/datasets/pipelines/data_augment_utils.py b/mmdet3d/datasets/pipelines/data_augment_utils.py
+--- a/mmdet3d/datasets/pipelines/data_augment_utils.py
++++ b/mmdet3d/datasets/pipelines/data_augment_utils.py
+@@ -2,7 +2,10 @@
+ import numba
+ import numpy as np
+ import warnings
+-from numba.errors import NumbaPerformanceWarning
++try:
++    from numba.errors import NumbaPerformanceWarning
++except ImportError:
++    from numba.core.errors import NumbaPerformanceWarning
+ 
+ from mmdet3d.core.bbox import box_np_ops
+ 
+diff --git a/mmdet3d/ops/_ext_stub.py b/mmdet3d/ops/_ext_stub.py
+new file mode 100644
+--- /dev/null
++++ b/mmdet3d/ops/_ext_stub.py
+@@ -0,0 +1,12 @@
++def missing_op(name):
++
++    def unavailable(*args, **kwargs):
++        raise RuntimeError(
++            f'mmdet3d native op {name} is unavailable in the '
++            'muSPACE compatibility build')
++
++    return unavailable
++
++
++def __getattr__(name):
++    return missing_op(name)
+diff --git a/mmdet3d/ops/ball_query/ball_query_ext.py b/mmdet3d/ops/ball_query/ball_query_ext.py
+new file mode 100644
+--- /dev/null
++++ b/mmdet3d/ops/ball_query/ball_query_ext.py
+@@ -0,0 +1 @@
++from .._ext_stub import __getattr__
+diff --git a/mmdet3d/ops/furthest_point_sample/furthest_point_sample_ext.py b/mmdet3d/ops/furthest_point_sample/furthest_point_sample_ext.py
+new file mode 100644
+--- /dev/null
++++ b/mmdet3d/ops/furthest_point_sample/furthest_point_sample_ext.py
+@@ -0,0 +1 @@
++from .._ext_stub import __getattr__
+diff --git a/mmdet3d/ops/gather_points/gather_points_ext.py b/mmdet3d/ops/gather_points/gather_points_ext.py
+new file mode 100644
+--- /dev/null
++++ b/mmdet3d/ops/gather_points/gather_points_ext.py
+@@ -0,0 +1 @@
++from .._ext_stub import __getattr__
+diff --git a/mmdet3d/ops/group_points/group_points_ext.py b/mmdet3d/ops/group_points/group_points_ext.py
+new file mode 100644
+--- /dev/null
++++ b/mmdet3d/ops/group_points/group_points_ext.py
+@@ -0,0 +1 @@
++from .._ext_stub import __getattr__
+diff --git a/mmdet3d/ops/interpolate/interpolate_ext.py b/mmdet3d/ops/interpolate/interpolate_ext.py
+new file mode 100644
+--- /dev/null
++++ b/mmdet3d/ops/interpolate/interpolate_ext.py
+@@ -0,0 +1 @@
++from .._ext_stub import __getattr__
+diff --git a/mmdet3d/ops/iou3d/iou3d_cuda.py b/mmdet3d/ops/iou3d/iou3d_cuda.py
+new file mode 100644
+--- /dev/null
++++ b/mmdet3d/ops/iou3d/iou3d_cuda.py
+@@ -0,0 +1 @@
++from .._ext_stub import __getattr__
+diff --git a/mmdet3d/ops/knn/knn_ext.py b/mmdet3d/ops/knn/knn_ext.py
+new file mode 100644
+--- /dev/null
++++ b/mmdet3d/ops/knn/knn_ext.py
+@@ -0,0 +1 @@
++from .._ext_stub import __getattr__
+diff --git a/mmdet3d/ops/paconv/assign_score_withk_ext.py b/mmdet3d/ops/paconv/assign_score_withk_ext.py
+new file mode 100644
+--- /dev/null
++++ b/mmdet3d/ops/paconv/assign_score_withk_ext.py
+@@ -0,0 +1 @@
++from .._ext_stub import __getattr__
+diff --git a/mmdet3d/ops/roiaware_pool3d/roiaware_pool3d_ext.py b/mmdet3d/ops/roiaware_pool3d/roiaware_pool3d_ext.py
+new file mode 100644
+--- /dev/null
++++ b/mmdet3d/ops/roiaware_pool3d/roiaware_pool3d_ext.py
+@@ -0,0 +1 @@
++from .._ext_stub import __getattr__
+diff --git a/mmdet3d/ops/spconv/sparse_conv_ext.py b/mmdet3d/ops/spconv/sparse_conv_ext.py
+new file mode 100644
+--- /dev/null
++++ b/mmdet3d/ops/spconv/sparse_conv_ext.py
+@@ -0,0 +1 @@
++from .._ext_stub import __getattr__
+diff --git a/mmdet3d/ops/voxel/voxel_layer.py b/mmdet3d/ops/voxel/voxel_layer.py
+new file mode 100644
+--- /dev/null
++++ b/mmdet3d/ops/voxel/voxel_layer.py
+@@ -0,0 +1,23 @@
++"""muSPACE MUSA implementation of the mmdet3d voxel layer ABI."""
++
++import torch
++from mu_space.ops.hard_voxelize import dynamic_voxelize as _dynamic
++from mu_space.ops.hard_voxelize import hard_voxelize as _hard
++
++
++def dynamic_voxelize(points, voxel_size, coors_range, coors, NDim=3):
++    result = _dynamic(points, voxel_size, coors_range, ndim=NDim)
++    coors.copy_(result)
++    return coors
++
++
++def hard_voxelize(points, voxels, coors, num_points_per_voxel,
++                  voxel_size, coors_range, max_points, max_voxels,
++                  NDim=3, deterministic=True):
++    result = _hard(points, voxel_size, coors_range, max_points, max_voxels,
++                   ndim=NDim, deterministic=deterministic)
++    count = result[0].shape[0]
++    voxels[:count].copy_(result[0])
++    coors[:count].copy_(result[1])
++    num_points_per_voxel[:count].copy_(result[2])
++    return count

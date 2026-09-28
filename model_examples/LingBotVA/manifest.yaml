@@ -1,0 +1,28 @@
+name: LingBotVA
+repository: https://github.com/Robbyant/lingbot-va.git
+reference_branch: main
+reference_commit: 58c2ae5bac46bd8114065bea9d7d256eb67c16c3
+default_checkout: LingBotVA
+integration:
+  maintains_fork: false
+  training_entrypoint: model_examples/LingBotVA/scripts/train_posttrain_smoke.sh
+  validation_entrypoint: model_examples/LingBotVA/scripts/validate_fixture.sh
+  strict_backend: musa
+# The recipe patches provide the MUSA device layer, the attention paths, the
+# FlexAttention BlockMask compatibility workaround and the fused RoPE and FSDP
+# tuning paths; muSPACE itself contributes no native operator to this model, so
+# no muSPACE-specific kernel is dispatched.
+patch_marker: .mu_space_lingbotva.json
+patches:
+  - path: patches/lingbot-va-01-musa-runtime.patch
+    sha256: 06a9a72e8c2a09265b19e0b117e60a83cc4bdcb2303d29ad3a674d332bb3411f
+    scope: musa_device_runtime_and_distributed_backend
+  - path: patches/lingbot-va-02-musa-attention-flex.patch
+    sha256: 7e94d62ff150df5032aaa53657053bfd69ae195afe8d64940345416c991033c5
+    scope: musa_attention_paths_and_flex_blockmask
+  - path: patches/lingbot-va-03-training-entrypoint.patch
+    sha256: e51fa1a3c98355ef1d4d8caa129e163cb66b55ae2f2a86e5aeeca1ddeeec30d4
+    scope: reproducible_training_entrypoint
+  - path: patches/lingbot-va-04-rope-fusion-and-fsdp-tuning.patch
+    sha256: b63e93861f9b282e2c84bed38bd2e6f901c3a37fdbcac22f19721910293ea290
+    scope: fused_rope_autograd_and_fsdp_sharding_tuning

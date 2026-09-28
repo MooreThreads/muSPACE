@@ -1,0 +1,22 @@
+name: BEVDepth
+repository: https://github.com/Megvii-BaseDetection/BEVDepth.git
+reference_branch: main
+reference_commit: d78c7b58b10b9ada940462ba83ab24d99cae5833
+default_checkout: BEVDepth
+integration:
+  maintains_fork: false
+  operator: voxel_pooling_train
+  auxiliary_operator: standard_deform_conv
+  runtime_patcher: mu_space.patcher.bevdepth_patcher
+  strict_backend: musa
+training:
+  train_scenes: scene-0001:scene-0010
+  val_scenes: scene-0011:scene-0012
+  max_epochs: 5
+  max_hours: 8
+  config: bevdepth.exps.nuscenes.mv.bev_depth_lss_r50_256x704_128x128_24e_2key
+  modes:
+    - float32
+    - float16
+patch_marker: .mu_space_bevdepth.json
+patches: []

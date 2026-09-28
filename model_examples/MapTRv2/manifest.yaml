@@ -1,0 +1,17 @@
+name: MapTRv2
+repository: https://github.com/hustvl/MapTR.git
+reference_branch: maptrv2
+reference_commit: e03f097abef19e1ba3fed5f471a8d80fbfa0a064
+default_checkout: MapTR
+integration:
+  maintains_fork: false
+  operators:
+    - bev_pool_v2
+    - multi_scale_deformable_attn
+  runtime_patcher: mu_space.patcher.default_patcher
+  strict_backend: musa
+patch_marker: .mu_space_maptrv2.json
+patches:
+  - path: patches/maptrv2-01-musa-operators.patch
+    sha256: 2bc36beddea8e987c067f402a56db1b68a6452b3617650a08c31dc8e28a32060
+    scope: musa_bevpoolv2_msda_and_nuscenes_mini

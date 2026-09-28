@@ -1,0 +1,2 @@
+# The current MUSA smoke only needs the supported muSPACE PyTorch and torch_musa stack.
+# Do not install OpenVLA's CUDA-specific training dependencies for this fixture.

@@ -1,0 +1,274 @@
+diff --git a/wan_va/distributed/fsdp.py b/wan_va/distributed/fsdp.py
+index 44d1763..9cfde5a 100644
+--- a/wan_va/distributed/fsdp.py
++++ b/wan_va/distributed/fsdp.py
+@@ -1,5 +1,6 @@
+ # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
+ import gc
++import os
+ 
+ import torch
+ from torch.distributed.fsdp import fully_shard, MixedPrecisionPolicy
+@@ -23,13 +24,36 @@ def shard_model(model,
+         reduce_dtype=reduce_dtype,
+         cast_forward_inputs=False,
+     )
+-    fsdp_config = {"mp_policy": mp_policy, "reshard_after_forward": True}
++    # `reshard_after_forward=False` keeps the full parameters resident from the
++    # forward pass to the backward pass, so backward does not all-gather them a
++    # second time. The rank-0 trace of a 20-step run shows 203.7 GB gathered per
++    # optimizer step, 19.2x the 10.6 GB bf16 parameter set (30 blocks x 4 units x
++    # 10 micro-batches x forward+backward = 2420 collectives). This trades memory
++    # for the saving, so re-check peak memory before changing the batch size or
++    # the sequence length.
++    fsdp_config = {
++        "mp_policy": mp_policy,
++        "reshard_after_forward": os.environ.get(
++            "LINGBOT_FSDP_RESHARD_AFTER_FORWARD", "1") != "0",
++    }
+ 
++    # The collective count, not the bandwidth, is the lever: the same 75.5 MB
++    # all-gather takes 65 us in isolation but 2218 us inside training, so almost
++    # all of it is per-call overhead plus waiting for the slowest rank. Sharding
++    # each attention/FFN submodule separately (the default layout) issues about
++    # 2420 collectives per step; one FSDP unit per transformer block issues about
++    # 600 for the same bytes.
++    #   unit  = upstream layout, 4 nested units per block
++    #   block = one unit per transformer block
++    #   model = root only, fewest collectives and the largest memory
++    granularity = os.environ.get("LINGBOT_FSDP_SHARD_GRANULARITY", "unit")
+     for block in model.blocks:
+-        fully_shard(block.attn1, **fsdp_config)
+-        fully_shard(block.attn2, **fsdp_config)
+-        fully_shard(block.ffn, **fsdp_config)
+-        fully_shard(block, **fsdp_config)
++        if granularity == "unit":
++            fully_shard(block.attn1, **fsdp_config)
++            fully_shard(block.attn2, **fsdp_config)
++            fully_shard(block.ffn, **fsdp_config)
++        if granularity in ("unit", "block"):
++            fully_shard(block, **fsdp_config)
+ 
+     fully_shard(model, **fsdp_config)
+     return model
+diff --git a/wan_va/modules/model.py b/wan_va/modules/model.py
+index 25b45e5..1b878aa 100644
+--- a/wan_va/modules/model.py
++++ b/wan_va/modules/model.py
+@@ -24,6 +24,7 @@ from torch.nn.attention.flex_attention import (
+     and_masks,
+     or_masks
+ )
++from .rope_fused import apply_rotary_emb
+ from functools import partial
+ 
+ try:
+@@ -430,13 +431,6 @@ class WanAttention(torch.nn.Module):
+         key = key.unflatten(2, (self.heads, -1))
+         value = value.unflatten(2, (self.heads, -1))
+         if rotary_emb is not None:
+-
+-            def apply_rotary_emb(x, freqs):
+-                x_out = torch.view_as_complex(
+-                    x.to(torch.float64).reshape(x.shape[0], x.shape[1],
+-                                                x.shape[2], -1, 2))
+-                x_out = torch.view_as_real(x_out * freqs).flatten(3)
+-                return x_out.to(x.dtype)
+             query = apply_rotary_emb(query, rotary_emb)
+             key = apply_rotary_emb(key, rotary_emb)
+         slots = None
+diff --git a/wan_va/modules/rope_fused.py b/wan_va/modules/rope_fused.py
+new file mode 100644
+index 0000000..031f947
+--- /dev/null
++++ b/wan_va/modules/rope_fused.py
+@@ -0,0 +1,189 @@
++"""Single-kernel 3D rotary position embedding for the MUSA backend.
++
++Motivation
++----------
++``WanAttention.forward`` applied RoPE with
++
++    view_as_complex(x.to(float64).reshape(B, L, H, -1, 2)) * freqs
++
++The rank-0 profiler trace of a 20-step run attributes 2.391 s across 1800
++calls to ``launch_uncontig_kernel<mul_tensor<c10::complex<double>>>``, i.e.
++about 156 GB/s, roughly 10% of the 1600 GB/s HBM peak, plus 0.41 s of
++bf16<->fp64 casts. The traffic is high because every element is widened to a
++16-byte complex128 value and read back.
++
++This module replaces that chain with one Triton kernel that reads the bf16
++tensor and the fp32 cos/sin pair and writes bf16 directly, which removes both
++the fp64 widening and the intermediate complex tensor.
++
++Semantics
++---------
++The rotation pairs are adjacent elements of the last dimension (``x[..., 2j]``
++and ``x[..., 2j+1]`` for ``j < D/2``), and ``freqs`` is the complex64 tensor
++produced by ``WanRoPE.forward`` (``torch.polar(1, angle)``), so ``cos`` is
++``freqs.real`` and ``sin`` is ``freqs.imag``.
++
++Environment
++-----------
++``LINGBOT_ROPE_MODE``
++  ``eager`` (default) reproduces the original fp64 complex-multiply chain, so
++  applying this module alone changes no numerics.
++  ``kernel`` uses the fused Triton kernel and falls back to ``eager`` if the
++  kernel cannot be built or launched.
++
++Autograd
++--------
++A kernel launched into ``torch.empty_like(x)`` is invisible to autograd: the
++result is a leaf with ``requires_grad=False`` and ``grad_fn=None``, so the
++attention gradients would never reach ``to_q``/``to_k`` while the forward
++stayed numerically correct. ``_FusedRoPE`` closes that gap.
++
++The 2x2 rotation block ``[[c, -s], [s, c]]`` is orthogonal, so the transpose
++that backward needs is the same rotation with ``s -> -s``:
++
++    forward : y0 = x0*c - x1*s ;  y1 = x0*s + x1*c
++    backward: gx0 = g0*c + g1*s ; gx1 = -g0*s + g1*c   (forward with -s)
++
++One kernel therefore serves both directions through the ``SIGN`` constexpr, and
++the backward costs the same as the forward.
++"""
++
++from __future__ import annotations
++
++import os
++import warnings
++
++import torch
++
++__all__ = ["apply_rotary_emb", "eager_rotary_emb"]
++
++_FALLBACK_WARNED = False
++
++
++def eager_rotary_emb(x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
++    """Original implementation: fp64 complex multiply. Kept as the reference."""
++    x_out = torch.view_as_complex(
++        x.to(torch.float64).reshape(x.shape[0], x.shape[1], x.shape[2], -1, 2)
++    )
++    x_out = torch.view_as_real(x_out * freqs).flatten(3)
++    return x_out.to(x.dtype)
++
++
++def _triton_available() -> bool:
++    try:
++        import triton  # noqa: F401
++        import triton.language  # noqa: F401
++    except Exception:  # noqa: BLE001
++        return False
++    return True
++
++
++if _triton_available():
++    import triton
++    import triton.language as tl
++
++    @triton.jit
++    def _rope_kernel(
++        x_ptr,
++        cs_ptr,
++        y_ptr,
++        n_pairs,
++        D2,
++        H,
++        s_l,
++        s_h,
++        s_d,
++        s_cl,
++        BLOCK: tl.constexpr,
++        SIGN: tl.constexpr,
++    ):
++        pid = tl.program_id(0)
++        offs = pid * BLOCK + tl.arange(0, BLOCK)
++        mask = offs < n_pairs
++        j = offs % D2
++        t = offs // D2
++        head = t % H
++        pos = t // H
++
++        cs = cs_ptr + pos * s_cl + 2 * j
++        cos_v = tl.load(cs, mask=mask, other=1.0)
++        # SIGN is +1 for the forward rotation and -1 for its transpose
++        sin_v = tl.load(cs + 1, mask=mask, other=0.0) * SIGN
++
++        off = pos * s_l + head * s_h + 2 * j * s_d
++        x0 = tl.load(x_ptr + off, mask=mask, other=0.0).to(tl.float32)
++        x1 = tl.load(x_ptr + off + s_d, mask=mask, other=0.0).to(tl.float32)
++
++        out_ty = y_ptr.dtype.element_ty
++        tl.store(y_ptr + off, (x0 * cos_v - x1 * sin_v).to(out_ty), mask=mask)
++        tl.store(y_ptr + off + s_d, (x0 * sin_v + x1 * cos_v).to(out_ty), mask=mask)
++
++    def _launch(x: torch.Tensor, cs: torch.Tensor, sign: float) -> torch.Tensor:
++        """Launch the kernel. ``x`` must already be contiguous and 4-D."""
++        B, L, H, D = x.shape
++        D2 = D // 2
++        y = torch.empty_like(x)
++        n_pairs = B * L * H * D2
++        if n_pairs == 0:
++            return y
++        BLOCK = 1024
++        grid = (triton.cdiv(n_pairs, BLOCK),)
++        _rope_kernel[grid](
++            x,
++            cs,
++            y,
++            n_pairs,
++            D2,
++            H,
++            x.stride(1),
++            x.stride(2),
++            x.stride(3),
++            cs.stride(1),
++            BLOCK=BLOCK,
++            SIGN=sign,
++            num_warps=4,
++        )
++        return y
++
++    class _FusedRoPE(torch.autograd.Function):
++        """Fused RoPE that participates in the autograd graph."""
++
++        @staticmethod
++        def forward(ctx, x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
++            cs = torch.view_as_real(freqs.contiguous())
++            ctx.save_for_backward(cs)
++            return _launch(x, cs, 1.0)
++
++        @staticmethod
++        def backward(ctx, grad_y: torch.Tensor):
++            (cs,) = ctx.saved_tensors
++            grad_x = _launch(grad_y.contiguous(), cs, -1.0)
++            # freqs is a precomputed cos/sin table, never a parameter
++            return grad_x, None
++
++    def _fused(x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
++        if x.dim() != 4 or x.shape[0] != 1 or not torch.is_complex(freqs):
++            raise ValueError("unsupported shape for fused rope")
++        if not x.is_contiguous():
++            x = x.contiguous()
++        if x.requires_grad or x.grad_fn is not None:
++            return _FusedRoPE.apply(x, freqs)
++        # inference / eval: no graph to build
++        return _launch(x, torch.view_as_real(freqs.contiguous()), 1.0)
++
++
++def apply_rotary_emb(x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
++    """Apply 3D RoPE to ``x`` eagerly or with the fused kernel."""
++    global _FALLBACK_WARNED
++    if os.environ.get("LINGBOT_ROPE_MODE", "eager") != "kernel" or not _triton_available():
++        return eager_rotary_emb(x, freqs)
++    try:
++        return _fused(x, freqs)
++    except Exception as exc:  # noqa: BLE001
++        if not _FALLBACK_WARNED:
++            _FALLBACK_WARNED = True
++            warnings.warn(
++                "fused rope unavailable (%s: %s); falling back to the fp64 eager path"
++                % (type(exc).__name__, exc)
++            )
++        return eager_rotary_emb(x, freqs)

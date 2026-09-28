@@ -1,0 +1,22 @@
+diff --git a/projects/mmdet3d_plugin/datasets/pipelines/transform_3d.py b/projects/mmdet3d_plugin/datasets/pipelines/transform_3d.py
+index c4e7d01..daef35e 100755
+--- a/projects/mmdet3d_plugin/datasets/pipelines/transform_3d.py
++++ b/projects/mmdet3d_plugin/datasets/pipelines/transform_3d.py
+@@ -382,7 +382,7 @@ class ObjectRangeFilterTrack(object):
+         # using mask to index gt_labels_3d will cause bug when
+         # len(gt_labels_3d) == 1, where mask=1 will be interpreted
+         # as gt_labels_3d[1] and cause out of index error
+-        mask = mask.numpy().astype(np.bool)
++        mask = mask.numpy().astype(np.bool_)
+         gt_labels_3d = gt_labels_3d[mask]
+         gt_inds = gt_inds[mask]
+         gt_fut_traj = gt_fut_traj[mask]
+@@ -469,7 +469,7 @@ class CustomObjectRangeFilter(ObjectRangeFilter):
+         # using mask to index gt_labels_3d will cause bug when
+         # len(gt_labels_3d) == 1, where mask=1 will be interpreted
+         # as gt_labels_3d[1] and cause out of index error
+-        gt_labels_3d = gt_labels_3d[mask.numpy().astype(np.bool)]
++        gt_labels_3d = gt_labels_3d[mask.numpy().astype(np.bool_)]
+ 
+         # limit rad to [-pi, pi]
+         gt_bboxes_3d.limit_yaw(offset=0.5, period=2 * np.pi)

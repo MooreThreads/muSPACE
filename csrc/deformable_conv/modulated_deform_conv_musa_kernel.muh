@@ -1,0 +1,656 @@
+/*!
+**************************************************************************************************
+* Modulated Deformable Convolution v2 (DCNv2)
+* Copyright (c) 2018 Microsoft
+* Licensed under The MIT License [see LICENSE for details]
+**************************************************************************************************
+* Modified from
+*https://github.com/chengdazhi/Deformable-Convolution-V2-PyTorch/tree/pytorch_1.0.0
+* and from OpenMMLab MMCV's modulated_deform_conv operator.
+**************************************************************************************************
+*/
+
+#ifndef MUSPACE_MODULATED_DEFORM_CONV_MUSA_KERNEL_MUH_
+#define MUSPACE_MODULATED_DEFORM_CONV_MUSA_KERNEL_MUH_
+
+#include <float.h>
+#include <musa.h>
+
+#include "musa_kernel_helper.muh"
+
+namespace muspace_dcn {
+
+constexpr int kWarpSize = 32;
+
+// Shared-memory tile geometry of the NCHW grad_input kernel. MARGIN covers the
+// kernel extent (pad + dilation * (k - 1)) plus the usual offset range; sampling
+// positions outside the tile fall back to a global atomic.
+constexpr int kCol2ImTileH  = 8;
+constexpr int kCol2ImTileW  = 16;
+constexpr int kCol2ImMargin = 4;
+
+// Aligned N-wide POD (N in {2, 4}). One wide coalesced load/store covers N
+// contiguous channels per lane. Portable: it does not rely on dtype specific
+// vector intrinsics that mcc may rename.
+template <typename T, int N>
+struct alignas(N * sizeof(T)) VecN {
+  T v[N];
+};
+
+// Butterfly all-reduce: every lane ends with the warp-wide sum.
+__device__ __forceinline__ float warp_all_sum(float v) {
+#pragma unroll
+  for (int offset = kWarpSize / 2; offset > 0; offset >>= 1) {
+    v += __shfl_xor_sync(0xffffffffu, v, offset);
+  }
+  return v;
+}
+
+__device__ __forceinline__ float sigmoidf(float x) {
+  return 1.f / (1.f + __expf(-x));
+}
+
+// =================================================================================================
+// NCHW path (general: groups, deform_groups, arbitrary kernel/stride/dilation)
+// =================================================================================================
+
+// im2col: data_col[(c * kH * kW + k), b * Ho * Wo + p] = mask * bilinear(im, loc).
+//
+// Grid: (spatial_blocks, batch_size, kernel_h * chan_chunks)
+//   blockIdx.x * blockDim.x + threadIdx.x -> spatial index (h_col, w_col)
+//   blockIdx.y                            -> batch index
+//   blockIdx.z                            -> combined (ki, channel chunk)
+// The 3D grid removes the integer division chain of the flat-index form, and the
+// per-thread channel tile reuses one offset/mask read plus one set of bilinear
+// weights across `ctile` channels. chan_chunks splits the channel range when the
+// launch would otherwise not fill the device.
+template <typename T>
+__global__ void modulated_deform_conv_im2col_nchw_kernel(const T* __restrict__ data_im,
+                                                         const T* __restrict__ data_offset,
+                                                         const T* __restrict__ data_mask,
+                                                         const int height,
+                                                         const int width,
+                                                         const int kernel_h,
+                                                         const int kernel_w,
+                                                         const int pad_h,
+                                                         const int pad_w,
+                                                         const int stride_h,
+                                                         const int stride_w,
+                                                         const int dilation_h,
+                                                         const int dilation_w,
+                                                         const int batch_size,
+                                                         const int num_channels,
+                                                         const int deformable_group,
+                                                         const int height_col,
+                                                         const int width_col,
+                                                         const int chan_chunks,
+                                                         T* __restrict__ data_col) {
+  const int hw_col      = height_col * width_col;
+  const int bhw         = batch_size * hw_col;
+  const int kernel_size = kernel_h * kernel_w;
+  const int im_hw       = height * width;
+  const int cpg         = num_channels / deformable_group;
+  const int ctile       = cpg / chan_chunks;
+
+  const int sp_idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (sp_idx >= hw_col) return;
+
+  const int b        = blockIdx.y;
+  const int z        = blockIdx.z;
+  const int ki       = z / chan_chunks;
+  const int chunk_id = z - ki * chan_chunks;
+
+  const int h_col = sp_idx / width_col;
+  const int w_col = sp_idx - h_col * width_col;
+  const int h_in  = h_col * stride_h - pad_h;
+  const int w_in  = w_col * stride_w - pad_w;
+
+  const T*  im_base = data_im + b * num_channels * im_hw;
+  const int sp_out  = b * hw_col + sp_idx;
+  const int sp_off  = h_col * width_col + w_col;
+
+  const float h_base = h_in + ki * dilation_h;
+
+  for (int kj = 0; kj < kernel_w; kj++) {
+    const int   k      = ki * kernel_w + kj;
+    const float w_base = w_in + kj * dilation_w;
+
+    for (int dg = 0; dg < deformable_group; dg++) {
+      const int   dg_off_base = (b * deformable_group + dg) * 2 * kernel_size * hw_col;
+      const int   off_idx     = dg_off_base + (2 * k) * hw_col + sp_off;
+      const float offset_h    = static_cast<float>(data_offset[off_idx]);
+      const float offset_w    = static_cast<float>(data_offset[off_idx + hw_col]);
+
+      const int dg_mask_base = (b * deformable_group + dg) * kernel_size * hw_col;
+      const T   cur_mask     = data_mask[dg_mask_base + k * hw_col + sp_off];
+
+      const float h_im = h_base + offset_h;
+      const float w_im = w_base + offset_w;
+
+      const bool in_bounds =
+          h_im > -1.0f && w_im > -1.0f && h_im < static_cast<float>(height) && w_im < static_cast<float>(width);
+
+      const int h_low  = floorf(h_im);
+      const int w_low  = floorf(w_im);
+      const int h_high = h_low + 1;
+      const int w_high = w_low + 1;
+
+      const float lh = h_im - h_low;
+      const float lw = w_im - w_low;
+      const float hh = 1.0f - lh;
+      const float hw = 1.0f - lw;
+      const float w1 = hh * hw, w2 = hh * lw, w3 = lh * hw, w4 = lh * lw;
+
+      const bool b_hl_wl = (h_low >= 0 && w_low >= 0);
+      const bool b_hl_wh = (h_low >= 0 && w_high <= width - 1);
+      const bool b_hh_wl = (h_high <= height - 1 && w_low >= 0);
+      const bool b_hh_wh = (h_high <= height - 1 && w_high <= width - 1);
+
+      const int p1 = h_low * width + w_low;
+      const int p2 = h_low * width + w_high;
+      const int p3 = h_high * width + w_low;
+      const int p4 = h_high * width + w_high;
+
+      const int c_start  = dg * cpg + chunk_id * ctile;
+      const T*  im_ptr   = im_base + c_start * im_hw;
+      int       col_idx  = (c_start * kernel_size + k) * bhw + sp_out;
+      const int col_step = kernel_size * bhw;
+
+      const int tile_pairs = ctile >> 1;
+      const int tile_tail  = ctile & 1;
+
+      for (int ci = 0; ci < tile_pairs; ci++) {
+        T val0 = static_cast<T>(0);
+        T val1 = static_cast<T>(0);
+        if (in_bounds) {
+          float f0 = w1 * static_cast<float>(b_hl_wl ? im_ptr[p1] : static_cast<T>(0)) +
+                     w2 * static_cast<float>(b_hl_wh ? im_ptr[p2] : static_cast<T>(0)) +
+                     w3 * static_cast<float>(b_hh_wl ? im_ptr[p3] : static_cast<T>(0)) +
+                     w4 * static_cast<float>(b_hh_wh ? im_ptr[p4] : static_cast<T>(0));
+          val0             = static_cast<T>(f0);
+          const T* im_next = im_ptr + im_hw;
+          float    f1      = w1 * static_cast<float>(b_hl_wl ? im_next[p1] : static_cast<T>(0)) +
+                     w2 * static_cast<float>(b_hl_wh ? im_next[p2] : static_cast<T>(0)) +
+                     w3 * static_cast<float>(b_hh_wl ? im_next[p3] : static_cast<T>(0)) +
+                     w4 * static_cast<float>(b_hh_wh ? im_next[p4] : static_cast<T>(0));
+          val1 = static_cast<T>(f1);
+        }
+        data_col[col_idx]            = val0 * cur_mask;
+        data_col[col_idx + col_step] = val1 * cur_mask;
+        im_ptr += im_hw + im_hw;
+        col_idx += col_step + col_step;
+      }
+      if (tile_tail) {
+        T val = static_cast<T>(0);
+        if (in_bounds) {
+          float f = w1 * static_cast<float>(b_hl_wl ? im_ptr[p1] : static_cast<T>(0)) +
+                    w2 * static_cast<float>(b_hl_wh ? im_ptr[p2] : static_cast<T>(0)) +
+                    w3 * static_cast<float>(b_hh_wl ? im_ptr[p3] : static_cast<T>(0)) +
+                    w4 * static_cast<float>(b_hh_wh ? im_ptr[p4] : static_cast<T>(0));
+          val = static_cast<T>(f);
+        }
+        data_col[col_idx] = val * cur_mask;
+      }
+    }
+  }
+}
+
+// col2im (grad_input), shared-memory tiled.
+//
+// Grid: (tile_cols, tile_rows, batch_size * channels); one block owns one
+// (b, c) plane tile. Phase 1 scatters the four bilinear corners into a shared
+// tile, phase 2 writes the tile back with one global atomic per touched pixel.
+// Sampling positions that leave the tile fall back to a direct global atomic.
+// grad_im must be pre-zeroed.
+template <typename T>
+__global__ void modulated_deform_conv_col2im_nchw_kernel(const T* __restrict__ data_col,
+                                                         const T* __restrict__ data_offset,
+                                                         const T* __restrict__ data_mask,
+                                                         const int channels,
+                                                         const int height,
+                                                         const int width,
+                                                         const int kernel_h,
+                                                         const int kernel_w,
+                                                         const int pad_h,
+                                                         const int pad_w,
+                                                         const int stride_h,
+                                                         const int stride_w,
+                                                         const int dilation_h,
+                                                         const int dilation_w,
+                                                         const int batch_size,
+                                                         const int deformable_group,
+                                                         const int height_col,
+                                                         const int width_col,
+                                                         T* __restrict__ grad_im) {
+  const int SMEM_H     = kCol2ImTileH + 2 * kCol2ImMargin;
+  const int SMEM_W     = kCol2ImTileW + 2 * kCol2ImMargin;
+  const int SMEM_W_PAD = SMEM_W + 1;  // bank-conflict free: gcd(SMEM_W + 1, 32) == 1
+  const int SMEM_SIZE  = SMEM_H * SMEM_W_PAD;
+
+  extern __shared__ float smem[];
+
+  const int hw_col      = height_col * width_col;
+  const int kernel_size = kernel_h * kernel_w;
+  const int im_hw       = height * width;
+  const int cpg         = channels / deformable_group;
+
+  const int tile_col = blockIdx.x;
+  const int tile_row = blockIdx.y;
+  const int bc       = blockIdx.z;
+  const int b        = bc / channels;
+  const int c        = bc - b * channels;
+  const int dg       = c / cpg;
+
+  const int tile_h_start = tile_row * kCol2ImTileH;
+  const int tile_w_start = tile_col * kCol2ImTileW;
+
+  const int in_h_origin = tile_h_start * stride_h - pad_h - kCol2ImMargin;
+  const int in_w_origin = tile_w_start * stride_w - pad_w - kCol2ImMargin;
+
+  for (int i = threadIdx.x; i < SMEM_SIZE; i += blockDim.x) {
+    smem[i] = 0.0f;
+  }
+  __syncthreads();
+
+  const int tile_area = kCol2ImTileH * kCol2ImTileW;
+  for (int tid = threadIdx.x; tid < tile_area; tid += blockDim.x) {
+    const int local_h = tid / kCol2ImTileW;
+    const int local_w = tid - local_h * kCol2ImTileW;
+    const int h_out   = tile_h_start + local_h;
+    const int w_out   = tile_w_start + local_w;
+
+    if (h_out >= height_col || w_out >= width_col) continue;
+
+    const int h_in   = h_out * stride_h - pad_h;
+    const int w_in   = w_out * stride_w - pad_w;
+    const int sp_off = h_out * width_col + w_out;
+    const int sp_col = b * hw_col + sp_off;
+
+    const int dg_off_base  = (b * deformable_group + dg) * 2 * kernel_size * hw_col;
+    const int dg_mask_base = (b * deformable_group + dg) * kernel_size * hw_col;
+
+    for (int ki = 0; ki < kernel_h; ki++) {
+      const float h_base = h_in + ki * dilation_h;
+      for (int kj = 0; kj < kernel_w; kj++) {
+        const int   k      = ki * kernel_w + kj;
+        const float w_base = w_in + kj * dilation_w;
+
+        const int   off_idx  = dg_off_base + (2 * k) * hw_col + sp_off;
+        const float offset_h = static_cast<float>(data_offset[off_idx]);
+        const float offset_w = static_cast<float>(data_offset[off_idx + hw_col]);
+        const float cur_mask = static_cast<float>(data_mask[dg_mask_base + k * hw_col + sp_off]);
+
+        const float h_im = h_base + offset_h;
+        const float w_im = w_base + offset_w;
+
+        if (h_im <= -1.0f || w_im <= -1.0f || h_im >= static_cast<float>(height) || w_im >= static_cast<float>(width))
+          continue;
+
+        const int   col_idx  = (c * kernel_size + k) * (batch_size * hw_col) + sp_col;
+        const float top_grad = static_cast<float>(data_col[col_idx]) * cur_mask;
+
+        const int   h_low = floorf(h_im);
+        const int   w_low = floorf(w_im);
+        const float lh    = h_im - h_low;
+        const float lw    = w_im - w_low;
+        const float hh    = 1.0f - lh;
+        const float hw    = 1.0f - lw;
+
+        const int sh = h_low - in_h_origin;
+        const int sw = w_low - in_w_origin;
+
+        if (sh >= 0 && sh + 1 < SMEM_H && sw >= 0 && sw + 1 < SMEM_W) {
+          float* sp = smem + sh * SMEM_W_PAD + sw;
+          if (h_low >= 0 && w_low >= 0) atomicAdd(sp, hh * hw * top_grad);
+          if (h_low >= 0 && w_low + 1 <= width - 1) atomicAdd(sp + 1, hh * lw * top_grad);
+          if (h_low + 1 <= height - 1 && w_low >= 0) atomicAdd(sp + SMEM_W_PAD, lh * hw * top_grad);
+          if (h_low + 1 <= height - 1 && w_low + 1 <= width - 1) atomicAdd(sp + SMEM_W_PAD + 1, lh * lw * top_grad);
+        } else {
+          T* gptr = grad_im + (b * channels + c) * im_hw;
+          if (h_low >= 0 && w_low >= 0) atomicAdd(gptr + h_low * width + w_low, static_cast<T>(hh * hw * top_grad));
+          if (h_low >= 0 && w_low + 1 <= width - 1)
+            atomicAdd(gptr + h_low * width + w_low + 1, static_cast<T>(hh * lw * top_grad));
+          if (h_low + 1 <= height - 1 && w_low >= 0)
+            atomicAdd(gptr + (h_low + 1) * width + w_low, static_cast<T>(lh * hw * top_grad));
+          if (h_low + 1 <= height - 1 && w_low + 1 <= width - 1)
+            atomicAdd(gptr + (h_low + 1) * width + w_low + 1, static_cast<T>(lh * lw * top_grad));
+        }
+      }
+    }
+  }
+  __syncthreads();
+
+  const int wb_size = SMEM_H * SMEM_W;
+  T*        gptr    = grad_im + (b * channels + c) * im_hw;
+  for (int i = threadIdx.x; i < wb_size; i += blockDim.x) {
+    const int   sh  = i / SMEM_W;
+    const int   sw  = i - sh * SMEM_W;
+    const float val = smem[sh * SMEM_W_PAD + sw];
+    if (val == 0.0f) continue;
+    const int gh = in_h_origin + sh;
+    const int gw = in_w_origin + sw;
+    if (gh >= 0 && gh < height && gw >= 0 && gw < width) atomicAdd(gptr + gh * width + gw, static_cast<T>(val));
+  }
+}
+
+// col2im_coord (grad_offset / grad_mask).
+//
+// One thread owns one grad_offset element and loops over the channels of its
+// deformable group. Everything that only depends on (offset_c, h, w, b) is
+// hoisted out of the channel loop, and the four corner pixels are loaded once
+// per channel to feed both the bilinear value (grad_mask) and the coordinate
+// derivative (grad_offset).
+template <typename T>
+__global__ void modulated_deform_conv_col2im_coord_nchw_kernel(const int n,
+                                                               const T* __restrict__ data_col,
+                                                               const T* __restrict__ data_im,
+                                                               const T* __restrict__ data_offset,
+                                                               const T* __restrict__ data_mask,
+                                                               const int channels,
+                                                               const int height,
+                                                               const int width,
+                                                               const int kernel_h,
+                                                               const int kernel_w,
+                                                               const int pad_h,
+                                                               const int pad_w,
+                                                               const int stride_h,
+                                                               const int stride_w,
+                                                               const int dilation_h,
+                                                               const int dilation_w,
+                                                               const int channel_per_deformable_group,
+                                                               const int batch_size,
+                                                               const int offset_channels,
+                                                               const int deformable_group,
+                                                               const int height_col,
+                                                               const int width_col,
+                                                               T* __restrict__ grad_offset,
+                                                               T* __restrict__ grad_mask) {
+  const int hw_col      = height_col * width_col;
+  const int im_hw       = height * width;
+  const int kernel_size = kernel_h * kernel_w;
+
+  MUSPACE_MUSA_1D_KERNEL_LOOP(index, n) {
+    int w = index % width_col;
+    int h = (index / width_col) % height_col;
+    int c = (index / width_col / height_col) % offset_channels;
+    int b = (index / width_col / height_col) / offset_channels;
+
+    const int dg       = c / (2 * kernel_size);
+    const int offset_c = c - dg * 2 * kernel_size;
+    const int bp_dir   = offset_c & 1;
+    const int k        = offset_c >> 1;
+    const int ki       = k / kernel_w;
+    const int kj       = k - ki * kernel_w;
+
+    const int   sp_off      = h * width_col + w;
+    const int   dg_off_base = (b * deformable_group + dg) * 2 * kernel_size * hw_col;
+    const int   off_idx     = dg_off_base + (2 * k) * hw_col + sp_off;
+    const float offset_h    = static_cast<float>(data_offset[off_idx]);
+    const float offset_w    = static_cast<float>(data_offset[off_idx + hw_col]);
+
+    const int   dg_mask_base = (b * deformable_group + dg) * kernel_size * hw_col;
+    const float mask         = static_cast<float>(data_mask[dg_mask_base + k * hw_col + sp_off]);
+
+    const int   h_in  = h * stride_h - pad_h;
+    const int   w_in  = w * stride_w - pad_w;
+    const float inv_h = h_in + ki * dilation_h + offset_h;
+    const float inv_w = w_in + kj * dilation_w + offset_w;
+
+    const bool in_bounds =
+        inv_h > -1.0f && inv_w > -1.0f && inv_h < static_cast<float>(height) && inv_w < static_cast<float>(width);
+
+    const int   h_low = floorf(inv_h);
+    const int   w_low = floorf(inv_w);
+    const float lh    = inv_h - h_low;
+    const float lw    = inv_w - w_low;
+    const float hh    = 1.0f - lh;
+    const float hw    = 1.0f - lw;
+
+    const bool b_hl_wl = (h_low >= 0 && w_low >= 0);
+    const bool b_hl_wh = (h_low >= 0 && w_low + 1 <= width - 1);
+    const bool b_hh_wl = (h_low + 1 <= height - 1 && w_low >= 0);
+    const bool b_hh_wh = (h_low + 1 <= height - 1 && w_low + 1 <= width - 1);
+
+    const int p1 = h_low * width + w_low;
+    const int p2 = p1 + 1;
+    const int p3 = p1 + width;
+    const int p4 = p3 + 1;
+
+    const T*  data_col_ptr = data_col + dg * channel_per_deformable_group * batch_size * hw_col;
+    const int cpg_no_k     = channel_per_deformable_group / kernel_size;
+    const T*  data_im_ptr  = data_im + (b * deformable_group + dg) * cpg_no_k * im_hw;
+
+    const int col_base   = ((k * batch_size + b) * height_col + h) * width_col + w;
+    const int col_stride = kernel_size * batch_size * hw_col;
+
+    float val = 0.0f, mval = 0.0f;
+
+    for (int cc = 0; cc < cpg_no_k; cc++) {
+      const T*    im_ptr  = data_im_ptr + cc * im_hw;
+      const float col_val = static_cast<float>(data_col_ptr[col_base + cc * col_stride]);
+
+      if (in_bounds) {
+        const float v1 = b_hl_wl ? static_cast<float>(im_ptr[p1]) : 0.0f;
+        const float v2 = b_hl_wh ? static_cast<float>(im_ptr[p2]) : 0.0f;
+        const float v3 = b_hh_wl ? static_cast<float>(im_ptr[p3]) : 0.0f;
+        const float v4 = b_hh_wh ? static_cast<float>(im_ptr[p4]) : 0.0f;
+
+        mval += col_val * (hh * hw * v1 + hh * lw * v2 + lh * hw * v3 + lh * lw * v4);
+
+        float coord_weight;
+        if (bp_dir == 0) {
+          coord_weight = -hw * v1 - lw * v2 + hw * v3 + lw * v4;
+        } else {
+          coord_weight = -hh * v1 + hh * v2 - lh * v3 + lh * v4;
+        }
+        val += coord_weight * col_val * mask;
+      }
+    }
+
+    grad_offset[index] = static_cast<T>(val);
+    if (bp_dir == 0) {
+      grad_mask[(((b * deformable_group + dg) * kernel_size + k) * height_col + h) * width_col + w] =
+          static_cast<T>(mval);
+    }
+  }
+}
+
+// =================================================================================================
+// NHWC path (groups == deform_groups == 1) used by the offset-conv-fused operator
+//
+//   data_im   [B, H, W, Cin]
+//   offset    [B, Ho, Wo, 3T]            raw offset-conv output, T = kH * kW
+//   columns   [M, T * Cin]               M = B * Ho * Wo, k = t * Cin + ci
+//
+// NHWC makes the channel dimension contiguous so the 32 lanes of a warp read and
+// write consecutive channels. `offset` is the raw offset-conv output y: the taps
+// read y[..., :2T] and sigmoid(y[..., 2T:]) on the fly, which fuses the forward
+// sigmoid and avoids materializing separate offset and mask tensors.
+// =================================================================================================
+
+// Deformable gather. One warp owns one (m, t) pair; lanes iterate the channels.
+// All geometry (tap decode, offset/mask read, floor, corners, boundary validity,
+// bilinear weights) is uniform warp work computed once per (m, t) and reused
+// across all Cin channels, so the inner loop is 4 coalesced loads + 4 FMA + 1
+// store. Coordinates come straight from the grid, so there is no runtime integer
+// division.
+//
+// Boundary semantics: each of the four corners is zeroed when it falls outside
+// [0, H-1] x [0, W-1]. The outer gate of the NCHW kernel is mathematically
+// redundant given per-corner zeroing and is omitted. Indices are clamped so the
+// zero-weighted loads stay in bounds and remain unconditional and coalesced.
+// 32-bit indexing throughout; the launcher checks that Col stays below 2^31.
+template <typename T, int KH, int KW, int VW>
+__global__ void modulated_deform_conv_im2col_nhwc_kernel(const T* __restrict__ data_im,
+                                                         const T* __restrict__ data_offset,
+                                                         const int B,
+                                                         const int Cin,
+                                                         const int H,
+                                                         const int W,
+                                                         const int Ho,
+                                                         const int Wo,
+                                                         const int pad_h,
+                                                         const int pad_w,
+                                                         const int stride_h,
+                                                         const int stride_w,
+                                                         const int dil_h,
+                                                         const int dil_w,
+                                                         T* __restrict__ data_col) {
+  constexpr int Ttaps = KH * KW;
+
+  const int WPB  = blockDim.x >> 5;  // warps per block
+  const int lane = threadIdx.x & (kWarpSize - 1);
+  const int ow   = blockIdx.x * WPB + (threadIdx.x >> 5);
+  if (ow >= Wo) return;
+  const int oh = blockIdx.y;
+
+  const int b  = blockIdx.z / Ttaps;  // Ttaps literal -> strength reduced
+  const int t  = blockIdx.z - b * Ttaps;
+  const int ki = t / KW;
+  const int kj = t - ki * KW;
+
+  const int   m     = (b * Ho + oh) * Wo + ow;
+  const int   yb    = m * (3 * Ttaps);
+  const float off_h = (float)data_offset[yb + 2 * t];
+  const float off_w = (float)data_offset[yb + 2 * t + 1];
+  const float msk   = sigmoidf((float)data_offset[yb + 2 * Ttaps + t]);
+
+  const float h_im = (float)(oh * stride_h - pad_h + ki * dil_h) + off_h;
+  const float w_im = (float)(ow * stride_w - pad_w + kj * dil_w) + off_w;
+
+  const int   h_low = (int)floorf(h_im);
+  const int   w_low = (int)floorf(w_im);
+  const float lh = h_im - (float)h_low, lw = w_im - (float)w_low;
+  const float hh = 1.f - lh, hw = 1.f - lw;
+
+  const int  y0 = h_low, y1 = h_low + 1;
+  const int  x0 = w_low, x1 = w_low + 1;
+  const bool g1  = (y0 >= 0 && y0 < H && x0 >= 0 && x0 < W);
+  const bool g2  = (y0 >= 0 && y0 < H && x1 >= 0 && x1 < W);
+  const bool g3  = (y1 >= 0 && y1 < H && x0 >= 0 && x0 < W);
+  const bool g4  = (y1 >= 0 && y1 < H && x1 >= 0 && x1 < W);
+  const int  y0c = min(max(y0, 0), H - 1), y1c = min(max(y1, 0), H - 1);
+  const int  x0c = min(max(x0, 0), W - 1), x1c = min(max(x1, 0), W - 1);
+
+  // Uniform corner weights with the mask and the per-corner gate folded in.
+  const float cw1 = hh * hw * (g1 ? msk : 0.f);
+  const float cw2 = hh * lw * (g2 ? msk : 0.f);
+  const float cw3 = lh * hw * (g3 ? msk : 0.f);
+  const float cw4 = lh * lw * (g4 ? msk : 0.f);
+
+  const int base_b = b * H * W * Cin;
+  const int p1     = base_b + (y0c * W + x0c) * Cin;
+  const int p2     = base_b + (y0c * W + x1c) * Cin;
+  const int p3     = base_b + (y1c * W + x0c) * Cin;
+  const int p4     = base_b + (y1c * W + x1c) * Cin;
+
+  const int col_base = m * (Ttaps * Cin) + t * Cin;
+
+  // p1..p4 and col_base are multiples of Cin, so the VecN reinterpret stays
+  // aligned whenever Cin % VW == 0; a scalar tail covers the remainder.
+  using V        = VecN<T, VW>;
+  const int CinV = Cin / VW;
+  const V*  im1  = reinterpret_cast<const V*>(data_im + p1);
+  const V*  im2  = reinterpret_cast<const V*>(data_im + p2);
+  const V*  im3  = reinterpret_cast<const V*>(data_im + p3);
+  const V*  im4  = reinterpret_cast<const V*>(data_im + p4);
+  V*        colv = reinterpret_cast<V*>(data_col + col_base);
+  for (int c = lane; c < CinV; c += kWarpSize) {
+    const V a1 = im1[c], a2 = im2[c], a3 = im3[c], a4 = im4[c];
+    V       o;
+#pragma unroll
+    for (int k = 0; k < VW; ++k) {
+      o.v[k] = (T)(cw1 * (float)a1.v[k] + cw2 * (float)a2.v[k] + cw3 * (float)a3.v[k] + cw4 * (float)a4.v[k]);
+    }
+    colv[c] = o;
+  }
+  for (int cc = CinV * VW + lane; cc < Cin; cc += kWarpSize) {
+    const float val = cw1 * (float)data_im[p1 + cc] + cw2 * (float)data_im[p2 + cc] + cw3 * (float)data_im[p3 + cc] +
+                      cw4 * (float)data_im[p4 + cc];
+    data_col[col_base + cc] = (T)val;
+  }
+}
+
+// Backward col2im: one thread per (m, t, ci), block = Cin, grid = (Wo, Ho, B*T)
+// so (b, oh, ow, t) come from blockIdx with no runtime division. Each thread
+// recomputes the full geometry; that redundant arithmetic is what hides the
+// grad_input atomic latency (amortizing geometry across channels, which is the
+// right call for the forward gather, exposes the atomics here and is slower).
+// grad_offset / grad_mask are warp-reduced over 32 channels, one atomic per warp.
+// grad_im / grad_offset / grad_mask are float32 accumulators and must be
+// pre-zeroed. grad_mask is the gradient with respect to the PRE-sigmoid mask:
+// the sigmoid backward is folded in. 3x3, stride 1, dilation 1.
+template <typename T, int KH, int KW>
+__global__ void modulated_deform_conv_col2im_nhwc_kernel(const T* __restrict__ dCol,
+                                                         const T* __restrict__ data_im,
+                                                         const T* __restrict__ offset,
+                                                         const int B,
+                                                         const int Cin,
+                                                         const int H,
+                                                         const int W,
+                                                         const int Ho,
+                                                         const int Wo,
+                                                         const int pad_h,
+                                                         const int pad_w,
+                                                         float* __restrict__ gX,
+                                                         float* __restrict__ gOff,
+                                                         float* __restrict__ gMask) {
+  constexpr int TT = KH * KW;
+  const int     ci = threadIdx.x;
+  if (ci >= Cin) return;
+  const int ow = blockIdx.x, oh = blockIdx.y;
+  const int b  = blockIdx.z / TT;
+  const int t  = blockIdx.z - b * TT;
+  const int ki = t / KW, kj = t - ki * KW;
+  const int m = (b * Ho + oh) * Wo + ow;
+
+  const int   yb    = m * (3 * TT);
+  const float off_h = (float)offset[yb + 2 * t];
+  const float off_w = (float)offset[yb + 2 * t + 1];
+  const float msk   = sigmoidf((float)offset[yb + 2 * TT + t]);
+  const float h_im  = (float)(oh - pad_h + ki) + off_h;  // stride 1, dilation 1
+  const float w_im  = (float)(ow - pad_w + kj) + off_w;
+  const int   hl = (int)floorf(h_im), wl = (int)floorf(w_im);
+  const float lh = h_im - hl, lw = w_im - wl, hh = 1.f - lh, hw = 1.f - lw;
+  const int   y0 = hl, y1 = hl + 1, x0 = wl, x1 = wl + 1;
+  const bool  g1  = (y0 >= 0 && y0 < H && x0 >= 0 && x0 < W);
+  const bool  g2  = (y0 >= 0 && y0 < H && x1 >= 0 && x1 < W);
+  const bool  g3  = (y1 >= 0 && y1 < H && x0 >= 0 && x0 < W);
+  const bool  g4  = (y1 >= 0 && y1 < H && x1 >= 0 && x1 < W);
+  const int   y0c = min(max(y0, 0), H - 1), y1c = min(max(y1, 0), H - 1);
+  const int   x0c = min(max(x0, 0), W - 1), x1c = min(max(x1, 0), W - 1);
+  const int   base_b = b * H * W * Cin;
+  const int   p1     = base_b + (y0c * W + x0c) * Cin + ci;
+  const int   p2     = base_b + (y0c * W + x1c) * Cin + ci;
+  const int   p3     = base_b + (y1c * W + x0c) * Cin + ci;
+  const int   p4     = base_b + (y1c * W + x1c) * Cin + ci;
+  const float v1     = g1 ? (float)data_im[p1] : 0.f;
+  const float v2     = g2 ? (float)data_im[p2] : 0.f;
+  const float v3     = g3 ? (float)data_im[p3] : 0.f;
+  const float v4     = g4 ? (float)data_im[p4] : 0.f;
+  const float dc     = (float)dCol[m * (TT * Cin) + t * Cin + ci];
+  const float dSf    = dc * msk;
+  const float w00 = hh * hw, w01 = hh * lw, w10 = lh * hw, w11 = lh * lw;
+
+  if (g1) atomicAdd(&gX[p1], dSf * w00);
+  if (g2) atomicAdd(&gX[p2], dSf * w01);
+  if (g3) atomicAdd(&gX[p3], dSf * w10);
+  if (g4) atomicAdd(&gX[p4], dSf * w11);
+
+  float a_h = dSf * (-hw * v1 - lw * v2 + hw * v3 + lw * v4);
+  float a_w = dSf * (-hh * v1 + hh * v2 - lh * v3 + lh * v4);
+  float a_m = dc * (w00 * v1 + w01 * v2 + w10 * v3 + w11 * v4);
+  a_h       = warp_all_sum(a_h);
+  a_w       = warp_all_sum(a_w);
+  a_m       = warp_all_sum(a_m);
+  if ((threadIdx.x & (kWarpSize - 1)) == 0) {
+    atomicAdd(&gOff[m * (2 * TT) + 2 * t], a_h);
+    atomicAdd(&gOff[m * (2 * TT) + 2 * t + 1], a_w);
+    // Folded sigmoid backward: gMask is the gradient of the pre-sigmoid mask.
+    atomicAdd(&gMask[m * TT + t], a_m * msk * (1.f - msk));
+  }
+}
+
+}  // namespace muspace_dcn
+
+#endif  // MUSPACE_MODULATED_DEFORM_CONV_MUSA_KERNEL_MUH_

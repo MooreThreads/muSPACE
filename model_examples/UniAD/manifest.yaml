@@ -1,0 +1,45 @@
+name: UniAD
+repository: https://github.com/OpenDriveLab/UniAD.git
+reference_branch: main
+reference_commit: 7b5bf15e0e49522b6553ddc48e67833e8f5f0f52
+default_checkout: UniAD
+integration:
+  maintains_fork: false
+  operator: multi_scale_deformable_attn
+  runtime_patcher: mu_space.patcher.default_patcher
+  strict_backend: musa
+patch_marker: .mu_space_uniad.json
+patches:
+  - path: patches/uniad-01-mmdet-registry-collision.patch
+    sha256: 830c4c5f9365183b9529d0c16267d4708a9b098240ae0682c27739d80af25061
+    scope: mmdet_match_cost_registry_collision
+  - path: patches/uniad-02-dice-loss-registry.patch
+    sha256: ef116087c0d4096fd60516a13175efbe1e2391e93be371362c6dcc3fd61afd71
+    scope: dice_loss_registry_collision
+  - path: patches/uniad-03-numpy-bool-alias.patch
+    sha256: 5aa390e34382f66d1b37f0fd5f1f6099da368fa6b35ee598162784565da6c55b
+    scope: numpy_bool_alias
+  - path: patches/uniad-04-shapely2-map-api.patch
+    sha256: a06ec5a6c6507bb2639d8389fb6efdcf516e51d7bbad7f97d4ebb9bb60c65c2d
+    scope: shapely2_multipolygon_access
+  - path: patches/uniad-05-matplotlib-style.patch
+    sha256: e9befcf32c9a5a0f12d157737439b2e1c8fd2b485d7870a1cda480419e58cc62
+    scope: matplotlib_style_name
+  - path: patches/uniad-06-occ-metrics-backend.patch
+    sha256: 17ef9b74884a521e8ba919ee920aca684a1458b31b9fc0aaeb60d6de6dec6644
+    scope: torchmetrics_metric_base_and_helpers
+  - path: patches/uniad-07-planning-metrics.patch
+    sha256: 4f7fd197c1347cc1ad1438fe9b9318139392e5bba81b806041d1993ddce0cb4a
+    scope: planning_metrics_api
+  - path: patches/uniad-08-dataset-fileclient.patch
+    sha256: e2c763330f56cbaa68dff7937d3398ee178ffd9d06a5cba556be95bc8ac4128b
+    scope: dataset_file_client_api
+  - path: patches/uniad-09-grid-mask-device.patch
+    sha256: 1bf7cfe16fab36b1410f253b42fcf4b563603cdee9878136547c4176458198e6
+    scope: grid_mask_device_placement
+  - path: patches/uniad-10-panseg-assigner-device.patch
+    sha256: a225acc64ef40b5e3e167d8afd02c98487040a3117b24ba5a50acfb1b0094ca9
+    scope: panoptic_assigner_device_placement
+  - path: patches/uniad-11-remove-debug-imports.patch
+    sha256: 3c4d334289a260df0614c745f072e7c6e46b2ba8d911912ab0efff70743db1b8
+    scope: remove_debug_only_imports

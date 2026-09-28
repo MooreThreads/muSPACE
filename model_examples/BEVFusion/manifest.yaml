@@ -1,0 +1,16 @@
+name: BEVFusion
+repository: https://github.com/mit-han-lab/bevfusion.git
+reference_branch: main
+reference_commit: 326653dc06e0938edf1aae7d01efcd158ba83de5
+default_checkout: BEVFusion
+integration:
+  maintains_fork: false
+  runtime_patchers:
+    - mu_space.patcher.bevfusion_patcher
+    - mu_space.patcher.bevfusion_iou3d_patcher
+  strict_backend: musa
+patch_marker: .mu_space_bevfusion.json
+patches:
+  - path: patches/use-muspace-sigmoid-focal-loss.patch
+    sha256: 3e4eb09620b887bd5209a85714681832851f2864e0ca2595d56164be7613486a
+    scope: mmdet3d.models.heads.segm.vanilla.sigmoid_focal_loss

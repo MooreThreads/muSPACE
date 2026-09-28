@@ -1,0 +1,18 @@
+# Python 3.10 compatibility overrides for the legacy upstream requirements.
+numpy==1.26.4
+numba==0.66.0
+networkx==3.4.2
+einops==0.8.1
+casadi==3.6.7
+pytorch-lightning==1.9.5
+torchmetrics==0.11.4
+motmetrics==1.4.0
+xmltodict==1.0.4
+scikit-image==0.25.2
+lazy-loader==0.5
+yapf==0.40.1
+importlib-metadata>=6
+
+# UniAD's legacy requirements include NumPy 1.20 and are not installable as-is
+# on the supported Python 3.10 stack. Install the remaining dependencies from
+# the pinned upstream checkout and the OpenMMLab compatibility workflow.

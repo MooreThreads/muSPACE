@@ -1,0 +1,9 @@
+# Python 3.10 compatibility overrides for the legacy upstream requirements.
+numpy==1.26.4
+numba==0.66.0
+networkx==3.4.2
+yapf==0.40.1
+importlib-metadata>=6
+
+# Install the remaining OpenMMLab dependencies from the upstream checkout and
+# the local compatibility-wheel workflow used by the BEVFormer example.

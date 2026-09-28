@@ -1,0 +1,16 @@
+diff --git a/projects/mmdet3d_plugin/ops/bev_pool_v2/bev_pool.py b/projects/mmdet3d_plugin/ops/bev_pool_v2/bev_pool.py
+--- a/projects/mmdet3d_plugin/ops/bev_pool_v2/bev_pool.py
++++ b/projects/mmdet3d_plugin/ops/bev_pool_v2/bev_pool.py
+@@ -3,7 +3,11 @@ import numpy as np
+ import numpy as np
+ import torch
+ 
+-from . import bev_pool_v2_ext
++try:
++    from . import bev_pool_v2_ext
++except ImportError:
++    # The muSPACE runtime patch replaces this binding before execution.
++    bev_pool_v2_ext = None
+ 
+ __all__ = ['bev_pool_v2', 'TRTBEVPoolv2']
+ 

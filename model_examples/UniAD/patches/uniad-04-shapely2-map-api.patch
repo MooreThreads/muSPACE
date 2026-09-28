@@ -1,0 +1,18 @@
+diff --git a/projects/mmdet3d_plugin/datasets/eval_utils/map_api.py b/projects/mmdet3d_plugin/datasets/eval_utils/map_api.py
+index 5f26e58..da815c9 100644
+--- a/projects/mmdet3d_plugin/datasets/eval_utils/map_api.py
++++ b/projects/mmdet3d_plugin/datasets/eval_utils/map_api.py
+@@ -2088,8 +2088,12 @@ class NuScenesMapExplorer:
+         :param mask: Canvas where mask will be generated.
+         :return: Numpy ndarray polygon mask.
+         """
+-        if not polygons:
++        if polygons.is_empty:
+             return mask
++        if hasattr(polygons, 'geoms'):
++            polygons = polygons.geoms
++        else:
++            polygons = [polygons]
+ 
+         def int_coords(x):
+             # function to round and convert to int

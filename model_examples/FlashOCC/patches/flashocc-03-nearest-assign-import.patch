@@ -1,0 +1,16 @@
+diff --git a/projects/mmdet3d_plugin/ops/nearest_assign/nearest_assign.py b/projects/mmdet3d_plugin/ops/nearest_assign/nearest_assign.py
+--- a/projects/mmdet3d_plugin/ops/nearest_assign/nearest_assign.py
++++ b/projects/mmdet3d_plugin/ops/nearest_assign/nearest_assign.py
+@@ -1,8 +1,11 @@
+ # Copyright (c) Phigent Robotics. All rights reserved.
+ 
+ import numpy as np
+ import torch
+ 
+-from . import nearest_assign_ext
++try:
++    from . import nearest_assign_ext
++except ImportError:
++    nearest_assign_ext = None
+ 
+ __all__ = ['nearest_assign']

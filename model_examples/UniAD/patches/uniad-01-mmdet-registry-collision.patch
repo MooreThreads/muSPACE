@@ -1,0 +1,13 @@
+diff --git a/projects/mmdet3d_plugin/core/bbox/match_costs/match_cost.py b/projects/mmdet3d_plugin/core/bbox/match_costs/match_cost.py
+index d73b7e0..515ac1c 100755
+--- a/projects/mmdet3d_plugin/core/bbox/match_costs/match_cost.py
++++ b/projects/mmdet3d_plugin/core/bbox/match_costs/match_cost.py
+@@ -28,7 +28,7 @@ class BBox3DL1Cost(object):
+         return bbox_cost * self.weight
+ 
+ 
+-@MATCH_COST.register_module()
++@MATCH_COST.register_module(force=True)
+ class DiceCost(object):
+     """IoUCost.
+ 

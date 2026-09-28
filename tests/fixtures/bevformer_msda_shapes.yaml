@@ -1,0 +1,21 @@
+# Metadata copied from the pinned BEVFormer-tiny config.  Tensor values are
+# generated at test time; no checkpoint, image, or nuScenes data is stored.
+source:
+  repository: https://github.com/fundamentalvision/BEVFormer.git
+  commit: 66b65f3a1f58caf0507cb2a971b9c0e7f842376c
+  config: projects/configs/bevformer/bevformer_tiny.py
+dtype: float32
+device: musa:0
+model:
+  batch_size: 1
+  cameras: 6
+  embed_dims: 256
+  heads: 8
+  levels: 1
+  points: 8
+  bev_height: 50
+  bev_width: 50
+  feature_shapes: [[25, 50]]
+  feature_tokens: 1250
+  temporal_queue: 2
+  spatial_reference_points: 4

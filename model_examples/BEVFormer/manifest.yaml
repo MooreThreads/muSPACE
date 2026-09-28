@@ -1,0 +1,32 @@
+name: BEVFormer
+repository: https://github.com/fundamentalvision/BEVFormer.git
+reference_branch: master
+reference_commit: 66b65f3a1f58caf0507cb2a971b9c0e7f842376c
+default_checkout: BEVFormer
+integration:
+  maintains_fork: false
+  compatibility_msda_backend: pytorch_reference
+  optimized_msda_backend: mu_space
+  # DCNv2 is native-only and reaches the model through mmcv's CONV_LAYERS registry,
+  # so it needs no source patch. Only the base and small configs build DCN layers.
+  dcnv2_backend: mu_space
+  dcnv2_integration: runtime_patcher
+  runtime_patcher: mu_space.patcher.default_patcher
+  strict_backend: musa
+patch_marker: .mu_space_bevformer.json
+patches:
+  - path: patches/bevformer-01-musa-device-reference-msda.patch
+    sha256: c4ce11cfda13f73cf184d28a2dae773dcd0a731d23f239fa4b874e2f9f63f286
+    scope: musa_device_and_reference_msda
+  - path: patches/bevformer-02-training-compat.patch
+    sha256: ada27f424f917ec7661596a58c973a3a383f6077cb9375ebdcdb09aa03f75949
+    scope: training_import_and_torch_rotation_compat
+# Applied to extracted sdists by scripts/build_openmmlab_compat_wheels.sh with
+# `patch -p1`, not to the model checkout, so `mu-space migrate` never sees them.
+dependency_patches:
+  - path: patches/deps-mmcv-full-1.4.0.patch
+    sha256: c3ea6f0c2f34d0e44af3db2f95c35c863cd62abe342e1e950414437aa86cc922
+    scope: mmcv_full_1_4_0_python310_build
+  - path: patches/deps-mmdet3d-0.17.1.patch
+    sha256: 11282ce357bb3fc605be421b67147107858614433f92b58d45187ee99f1659e2
+    scope: mmdet3d_0_17_1_python310_build

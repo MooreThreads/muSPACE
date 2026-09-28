@@ -1,0 +1,37 @@
+# Python
+*.egg-info/
+*.pyc
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+.vscode/
+.claude/
+
+# Generated build outputs
+mu_space/_version.py
+mu_space/native/*.so
+*.so
+build/
+dist/
+wheelhouse/
+.tmp/
+
+# Local artifacts
+*.pt
+
+# Upstream model checkouts created by model_examples/*/scripts/prepare_checkout.sh
+/BEVDepth/
+/BEVFormer/
+/BEVFusion/
+/DriveDreamer/
+/FlashOCC/
+/LingBotVA/
+/MapTR/
+/OpenVLA/
+/QCNet/
+/SparseDrive/
+/UniAD/
+model_examples/BEVFormer/BEVFormer/
+

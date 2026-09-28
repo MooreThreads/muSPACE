@@ -1,0 +1,21 @@
+diff --git a/projects/mmdet3d_plugin/datasets/nuscenes_e2e_dataset.py b/projects/mmdet3d_plugin/datasets/nuscenes_e2e_dataset.py
+index c1b9392..2f5ef4a 100644
+--- a/projects/mmdet3d_plugin/datasets/nuscenes_e2e_dataset.py
++++ b/projects/mmdet3d_plugin/datasets/nuscenes_e2e_dataset.py
+@@ -149,14 +149,14 @@ class NuScenesE2EDataset(NuScenesDataset):
+         """
+         if self.file_client_args['backend'] == 'disk':
+             # data_infos = mmcv.load(ann_file)
+-            data = pickle.loads(self.file_client.get(ann_file))
++            data = pickle.load(ann_file) if hasattr(ann_file, 'read') else pickle.loads(self.file_client.get(ann_file))
+             data_infos = list(
+                 sorted(data['infos'], key=lambda e: e['timestamp']))
+             data_infos = data_infos[::self.load_interval]
+             self.metadata = data['metadata']
+             self.version = self.metadata['version']
+         elif self.file_client_args['backend'] == 'petrel':
+-            data = pickle.loads(self.file_client.get(ann_file))
++            data = pickle.load(ann_file) if hasattr(ann_file, 'read') else pickle.loads(self.file_client.get(ann_file))
+             data_infos = list(
+                 sorted(data['infos'], key=lambda e: e['timestamp']))
+             data_infos = data_infos[::self.load_interval]

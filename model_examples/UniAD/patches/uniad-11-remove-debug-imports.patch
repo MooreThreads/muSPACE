@@ -1,0 +1,24 @@
+diff --git a/projects/mmdet3d_plugin/datasets/eval_utils/nuscenes_eval_motion.py b/projects/mmdet3d_plugin/datasets/eval_utils/nuscenes_eval_motion.py
+index 3af54f4..1ca16ff 100644
+--- a/projects/mmdet3d_plugin/datasets/eval_utils/nuscenes_eval_motion.py
++++ b/projects/mmdet3d_plugin/datasets/eval_utils/nuscenes_eval_motion.py
+@@ -40,7 +40,6 @@ from nuscenes.eval.detection.data_classes import DetectionConfig, DetectionMetri
+ from nuscenes.eval.detection.render import summary_plot, class_pr_curve, dist_pr_curve, visualize_sample
+ from nuscenes.eval.common.utils import quaternion_yaw, Quaternion
+ from mmdet3d.core.bbox.iou_calculators import BboxOverlaps3D
+-from IPython import embed
+ import json
+ from typing import Any
+ 
+diff --git a/projects/mmdet3d_plugin/datasets/samplers/group_sampler.py b/projects/mmdet3d_plugin/datasets/samplers/group_sampler.py
+index 16c59e5..9fa4271 100644
+--- a/projects/mmdet3d_plugin/datasets/samplers/group_sampler.py
++++ b/projects/mmdet3d_plugin/datasets/samplers/group_sampler.py
+@@ -8,7 +8,6 @@ from mmcv.runner import get_dist_info
+ from torch.utils.data import Sampler
+ from .sampler import SAMPLER
+ import random
+-from IPython import embed
+ 
+ 
+ @SAMPLER.register_module()

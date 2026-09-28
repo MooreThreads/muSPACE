@@ -1,0 +1,13 @@
+diff --git a/projects/mmdet3d_plugin/uniad/dense_heads/planning_head_plugin/planning_metrics.py b/projects/mmdet3d_plugin/uniad/dense_heads/planning_head_plugin/planning_metrics.py
+index fdcf079..e0966f9 100644
+--- a/projects/mmdet3d_plugin/uniad/dense_heads/planning_head_plugin/planning_metrics.py
++++ b/projects/mmdet3d_plugin/uniad/dense_heads/planning_head_plugin/planning_metrics.py
+@@ -8,7 +8,7 @@ import torch
+ import torch.nn as nn
+ import numpy as np
+ from skimage.draw import polygon
+-from pytorch_lightning.metrics.metric import Metric
++from torchmetrics import Metric
+ from ..occ_head_plugin import calculate_birds_eye_view_parameters, gen_dx_bx
+ 
+ 

@@ -1,0 +1,30 @@
+diff --git a/projects/mmdet3d_plugin/core/evaluation/ray_metrics.py b/projects/mmdet3d_plugin/core/evaluation/ray_metrics.py
+index e90f7bf..ba2acb2 100644
+--- a/projects/mmdet3d_plugin/core/evaluation/ray_metrics.py
++++ b/projects/mmdet3d_plugin/core/evaluation/ray_metrics.py
+@@ -10,7 +10,15 @@ from prettytable import PrettyTable
+ from .ray_pq import Metric_RayPQ
+ 
+ 
+-dvr = load("dvr", sources=["lib/dvr/dvr.cpp", "lib/dvr/dvr.cu"], verbose=True, extra_cuda_cflags=['-allow-unsupported-compiler'])
++dvr = None
++
++
++def _get_dvr():
++    global dvr
++    if dvr is None:
++        dvr = load("dvr", sources=["lib/dvr/dvr.cpp", "lib/dvr/dvr.cu"],
++                   verbose=True, extra_cuda_cflags=['-allow-unsupported-compiler'])
++    return dvr
+ _pc_range = [-40, -40, -1.0, 40, 40, 5.4]
+ _voxel_size = 0.4
+ 
+@@ -107,7 +115,7 @@ def process_one_sample(sem_pred, lidar_rays, output_origin, instance_pred=None):
+         output_tindex_render = lidar_tindex  # [1, N], all zeros
+ 
+         with torch.no_grad():
+-            pred_dist, _, coord_index = dvr.render_forward(
++            pred_dist, _, coord_index = _get_dvr().render_forward(
+                 occ_pred.cuda(),
+                 output_origin_render.cuda(),
+                 output_points_render.cuda(),

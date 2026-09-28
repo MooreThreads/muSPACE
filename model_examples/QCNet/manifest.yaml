@@ -1,0 +1,19 @@
+name: QCNet
+repository: https://github.com/ZikangZhou/QCNet.git
+reference_branch: main
+reference_commit: 55cacb418cbbce3753119c1f157360e66993d0d0
+default_checkout: QCNet
+integration:
+  maintains_fork: false
+  operators:
+    - radius
+    - radius_graph
+  runtime_compatibility: mu_space.qcnet_compat
+  training_entrypoint: model_examples/QCNet/scripts/train_step_musa.py
+  validation_entrypoint: model_examples/QCNet/scripts/validate_fixture.sh
+  strict_backend: musa
+patch_marker: .mu_space_qcnet.json
+patches:
+  - path: patches/qcnet-01-musa-radius.patch
+    sha256: e0080f3d7c33309817731ef55734052c4b92cf9a3f764d6a1bd432364acfc655
+    scope: device_aware_radius_imports

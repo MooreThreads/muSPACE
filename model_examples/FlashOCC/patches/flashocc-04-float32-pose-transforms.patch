@@ -1,0 +1,16 @@
+diff --git a/projects/mmdet3d_plugin/models/detectors/bevdet.py b/projects/mmdet3d_plugin/models/detectors/bevdet.py
+index 7f49fdf..ddf9d70 100644
+--- a/projects/mmdet3d_plugin/models/detectors/bevdet.py
++++ b/projects/mmdet3d_plugin/models/detectors/bevdet.py
+@@ -70,9 +70,8 @@ class BEVDet(Base3DDetector):
+ 
+         # calculate the transformation from adj sensor to key ego
+         keyego2global = ego2globals[:, 0,  ...].unsqueeze(1)    # (B, 1, 4, 4)
+-        global2keyego = torch.inverse(keyego2global.double())   # (B, 1, 4, 4)
++        global2keyego = torch.inverse(keyego2global.float())    # (B, 1, 4, 4)
+         sensor2keyegos = \
+-            global2keyego @ ego2globals.double() @ sensor2egos.double()     # (B, N_views, 4, 4)
+-        sensor2keyegos = sensor2keyegos.float()
++            global2keyego @ ego2globals.float() @ sensor2egos.float()       # (B, N_views, 4, 4)
+ 
+         return [imgs, sensor2keyegos, ego2globals, intrins,

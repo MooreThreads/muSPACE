@@ -1,0 +1,28 @@
+diff --git a/mmdet3d/models/heads/segm/vanilla.py b/mmdet3d/models/heads/segm/vanilla.py
+--- a/mmdet3d/models/heads/segm/vanilla.py
++++ b/mmdet3d/models/heads/segm/vanilla.py
+@@ -1,0 +2,2 @@
++import os
++
+@@ -8,0 +11,2 @@
++from mu_space.ops import sigmoid_focal_loss as muspace_sigmoid_focal_loss
++
+@@ -31,14 +33,4 @@
+-    p = torch.sigmoid(inputs)
+-    ce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
+-    p_t = p * targets + (1 - p) * (1 - targets)
+-    loss = ce_loss * ((1 - p_t) ** gamma)
+-
+-    if alpha >= 0:
+-        alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
+-        loss = alpha_t * loss
+-
+-    if reduction == "mean":
+-        loss = loss.mean()
+-    elif reduction == "sum":
+-        loss = loss.sum()
+-    return loss
++    return muspace_sigmoid_focal_loss(
++        inputs, targets, alpha=alpha, gamma=gamma, reduction=reduction,
++        backend=os.environ.get("MUSPACE_SIGMOID_FOCAL_LOSS_BACKEND", "auto"),
++    )

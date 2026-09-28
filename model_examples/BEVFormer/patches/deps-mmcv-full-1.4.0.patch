@@ -1,0 +1,95 @@
+--- a/setup.py
++++ b/setup.py
+@@ -234,14 +234,14 @@
+         extra_compile_args = {'cxx': []}
+ 
+         # Since the PR (https://github.com/open-mmlab/mmcv/pull/1463) uses
+-        # c++14 features, the argument ['std=c++14'] must be added here.
++        # The validated muSPACE PyTorch stack requires C++17.
+         # However, in the windows environment, some standard libraries
+         # will depend on c++17 or higher. In fact, for the windows
+         # environment, the compiler will choose the appropriate compiler
+         # to compile those cpp files, so there is no need to add the
+         # argument
+         if platform.system() != 'Windows':
+-            extra_compile_args['cxx'] = ['-std=c++14']
++            extra_compile_args['cxx'] = ['-std=c++17']
+ 
+         include_dirs = []
+ 
+@@ -291,14 +291,14 @@
+             include_dirs.append(os.path.abspath('./mmcv/ops/csrc/common'))
+ 
+         # Since the PR (https://github.com/open-mmlab/mmcv/pull/1463) uses
+-        # c++14 features, the argument ['std=c++14'] must be added here.
++        # The validated muSPACE PyTorch stack requires C++17.
+         # However, in the windows environment, some standard libraries
+         # will depend on c++17 or higher. In fact, for the windows
+         # environment, the compiler will choose the appropriate compiler
+         # to compile those cpp files, so there is no need to add the
+         # argument
+         if 'nvcc' in extra_compile_args and platform.system() != 'Windows':
+-            extra_compile_args['nvcc'] += ['-std=c++14']
++            extra_compile_args['nvcc'] += ['-std=c++17']
+ 
+         ext_ops = extension(
+             name=ext_name,
+@@ -354,7 +354,9 @@
+ 
+ 
+ setup(
+-    name='mmcv' if os.getenv('MMCV_WITH_OPS', '1') == '0' else 'mmcv-full',
++    # Keep legacy OpenMMLab dependency metadata satisfied when native ops are
++    # intentionally disabled for the muSPACE compatibility baseline.
++    name='mmcv-full',
+     version=get_version(),
+     description='OpenMMLab Computer Vision Foundation',
+     keywords='computer vision',
+--- a/mmcv/utils/ext_loader.py
++++ b/mmcv/utils/ext_loader.py
+@@ -9,8 +9,21 @@
+ 
+ if torch.__version__ != 'parrots':
+ 
++    def _missing_ext_func(name, error):
++
++        def missing_ext(*args, **kwargs):
++            raise RuntimeError(
++                f'mmcv native op {name} is unavailable in the '
++                'muSPACE compatibility build') from error
++
++        return missing_ext
++
+     def load_ext(name, funcs):
+-        ext = importlib.import_module('mmcv.' + name)
++        try:
++            ext = importlib.import_module('mmcv.' + name)
++        except ModuleNotFoundError as error:
++            ExtModule = namedtuple('ExtModule', funcs)
++            return ExtModule(*[_missing_ext_func(fun, error) for fun in funcs])
+         for fun in funcs:
+             assert hasattr(ext, fun), f'{fun} miss in module {name}'
+         return ext
+--- a/mmcv/runner/checkpoint.py
++++ b/mmcv/runner/checkpoint.py
+@@ -11,7 +11,10 @@
+ from tempfile import TemporaryDirectory
+ 
+ import torch
+-import torchvision
++try:
++    import torchvision
++except (ImportError, OSError, RuntimeError):
++    torchvision = None
+ from torch.optim import Optimizer
+ 
+ import mmcv
+@@ -107,6 +110,8 @@
+ 
+ def get_torchvision_models():
+     model_urls = dict()
++    if torchvision is None:
++        return model_urls
+     for _, name, ispkg in pkgutil.walk_packages(torchvision.models.__path__):
+         if ispkg:
+             continue

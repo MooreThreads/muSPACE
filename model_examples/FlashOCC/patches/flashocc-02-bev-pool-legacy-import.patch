@@ -1,0 +1,14 @@
+diff --git a/projects/mmdet3d_plugin/ops/bev_pool/bev_pool.py b/projects/mmdet3d_plugin/ops/bev_pool/bev_pool.py
+--- a/projects/mmdet3d_plugin/ops/bev_pool/bev_pool.py
++++ b/projects/mmdet3d_plugin/ops/bev_pool/bev_pool.py
+@@ -1,6 +1,9 @@
+ import torch
+ 
+-from . import bev_pool_ext
++try:
++    from . import bev_pool_ext
++except ImportError:
++    bev_pool_ext = None
+ 
+ 
+ class QuickBevPoolingCuda(torch.autograd.Function):

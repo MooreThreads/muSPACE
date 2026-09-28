@@ -1,0 +1,352 @@
+diff --git a/projects/mmdet3d_plugin/bevformer/apis/mmdet_train.py b/projects/mmdet3d_plugin/bevformer/apis/mmdet_train.py
+index e57bd22..db3a5c0 100644
+--- a/projects/mmdet3d_plugin/bevformer/apis/mmdet_train.py
++++ b/projects/mmdet3d_plugin/bevformer/apis/mmdet_train.py
+@@ -73,22 +73,22 @@ def custom_train_detector(model,
+         # Sets the `find_unused_parameters` parameter in
+         # torch.nn.parallel.DistributedDataParallel
+         model = MMDistributedDataParallel(
+-            model.cuda(),
+-            device_ids=[torch.cuda.current_device()],
++            model.to('musa'),
++            device_ids=[torch.musa.current_device()] if hasattr(torch, 'musa') else None,
+             broadcast_buffers=False,
+             find_unused_parameters=find_unused_parameters)
+         if eval_model is not None:
+             eval_model = MMDistributedDataParallel(
+-                eval_model.cuda(),
+-                device_ids=[torch.cuda.current_device()],
++                eval_model.to('musa'),
++                device_ids=[torch.musa.current_device()] if hasattr(torch, 'musa') else None,
+                 broadcast_buffers=False,
+                 find_unused_parameters=find_unused_parameters)
+     else:
+         model = MMDataParallel(
+-            model.cuda(cfg.gpu_ids[0]), device_ids=cfg.gpu_ids)
++            model.to('musa'), device_ids=cfg.gpu_ids)
+         if eval_model is not None:
+             eval_model = MMDataParallel(
+-                eval_model.cuda(cfg.gpu_ids[0]), device_ids=cfg.gpu_ids)
++                eval_model.to('musa'), device_ids=cfg.gpu_ids)
+ 
+ 
+     # build runner
+@@ -197,4 +197,3 @@ def custom_train_detector(model,
+     elif cfg.load_from:
+         runner.load_checkpoint(cfg.load_from)
+     runner.run(data_loaders, cfg.workflow)
+-
+diff --git a/projects/mmdet3d_plugin/bevformer/apis/test.py b/projects/mmdet3d_plugin/bevformer/apis/test.py
+index cd507e4..206586f 100644
+--- a/projects/mmdet3d_plugin/bevformer/apis/test.py
++++ b/projects/mmdet3d_plugin/bevformer/apis/test.py
+@@ -122,12 +122,12 @@ def collect_results_cpu(result_part, size, tmpdir=None):
+         dir_tensor = torch.full((MAX_LEN, ),
+                                 32,
+                                 dtype=torch.uint8,
+-                                device='cuda')
++                                device='musa')
+         if rank == 0:
+             mmcv.mkdir_or_exist('.dist_test')
+             tmpdir = tempfile.mkdtemp(dir='.dist_test')
+             tmpdir = torch.tensor(
+-                bytearray(tmpdir.encode()), dtype=torch.uint8, device='cuda')
++                bytearray(tmpdir.encode()), dtype=torch.uint8, device='musa')
+             dir_tensor[:len(tmpdir)] = tmpdir
+         dist.broadcast(dir_tensor, 0)
+         tmpdir = dir_tensor.cpu().numpy().tobytes().decode().rstrip()
+@@ -161,4 +161,4 @@ def collect_results_cpu(result_part, size, tmpdir=None):
+ 
+ 
+ def collect_results_gpu(result_part, size):
+-    collect_results_cpu(result_part, size)
+\ No newline at end of file
++    collect_results_cpu(result_part, size)
+diff --git a/projects/mmdet3d_plugin/bevformer/modules/decoder.py b/projects/mmdet3d_plugin/bevformer/modules/decoder.py
+index 33024f8..c11bc0a 100644
+--- a/projects/mmdet3d_plugin/bevformer/modules/decoder.py
++++ b/projects/mmdet3d_plugin/bevformer/modules/decoder.py
+@@ -23,12 +23,6 @@ from mmcv.runner.base_module import BaseModule, ModuleList, Sequential
+ from mmcv.utils import (ConfigDict, build_from_cfg, deprecated_api_warning,
+                         to_2tuple)
+ 
+-from mmcv.utils import ext_loader
+-from .multi_scale_deformable_attn_function import MultiScaleDeformableAttnFunction_fp32, \
+-    MultiScaleDeformableAttnFunction_fp16
+-
+-ext_module = ext_loader.load_ext(
+-    '_ext', ['ms_deform_attn_backward', 'ms_deform_attn_forward'])
+ 
+ 
+ def inverse_sigmoid(x, eps=1e-5):
+@@ -322,19 +316,8 @@ class CustomMSDeformableAttention(BaseModule):
+             raise ValueError(
+                 f'Last dim of reference_points must be'
+                 f' 2 or 4, but get {reference_points.shape[-1]} instead.')
+-        if torch.cuda.is_available() and value.is_cuda:
+-
+-            # using fp16 deformable attention is unstable because it performs many sum operations
+-            if value.dtype == torch.float16:
+-                MultiScaleDeformableAttnFunction = MultiScaleDeformableAttnFunction_fp32
+-            else:
+-                MultiScaleDeformableAttnFunction = MultiScaleDeformableAttnFunction_fp32
+-            output = MultiScaleDeformableAttnFunction.apply(
+-                value, spatial_shapes, level_start_index, sampling_locations,
+-                attention_weights, self.im2col_step)
+-        else:
+-            output = multi_scale_deformable_attn_pytorch(
+-                value, spatial_shapes, sampling_locations, attention_weights)
++        output = multi_scale_deformable_attn_pytorch(
++            value, spatial_shapes, sampling_locations, attention_weights)
+ 
+         output = self.output_proj(output)
+ 
+diff --git a/projects/mmdet3d_plugin/bevformer/modules/encoder.py b/projects/mmdet3d_plugin/bevformer/modules/encoder.py
+index 6758847..6b015f5 100644
+--- a/projects/mmdet3d_plugin/bevformer/modules/encoder.py
++++ b/projects/mmdet3d_plugin/bevformer/modules/encoder.py
+@@ -44,7 +44,7 @@ class BEVFormerEncoder(TransformerLayerSequence):
+         self.fp16_enabled = False
+ 
+     @staticmethod
+-    def get_reference_points(H, W, Z=8, num_points_in_pillar=4, dim='3d', bs=1, device='cuda', dtype=torch.float):
++    def get_reference_points(H, W, Z=8, num_points_in_pillar=4, dim='3d', bs=1, device='musa', dtype=torch.float):
+         """Get the reference points used in SCA and TSA.
+         Args:
+             H, W: spatial shape of bev.
+@@ -87,11 +87,6 @@ class BEVFormerEncoder(TransformerLayerSequence):
+     # This function must use fp32!!!
+     @force_fp32(apply_to=('reference_points', 'img_metas'))
+     def point_sampling(self, reference_points, pc_range,  img_metas):
+-        # NOTE: close tf32 here.
+-        allow_tf32 = torch.backends.cuda.matmul.allow_tf32
+-        torch.backends.cuda.matmul.allow_tf32 = False
+-        torch.backends.cudnn.allow_tf32 = False
+-
+         lidar2img = []
+         for img_meta in img_metas:
+             lidar2img.append(img_meta['lidar2img'])
+@@ -143,10 +138,7 @@ class BEVFormerEncoder(TransformerLayerSequence):
+         reference_points_cam = reference_points_cam.permute(2, 1, 3, 0, 4)
+         bev_mask = bev_mask.permute(2, 1, 3, 0, 4).squeeze(-1)
+ 
+-        torch.backends.cuda.matmul.allow_tf32 = allow_tf32
+-        torch.backends.cudnn.allow_tf32 = allow_tf32
+-
+-        return reference_points_cam, bev_mask
++        return reference_points_cam, bev_mask
+ 
+     @auto_fp16()
+     def forward(self,
+diff --git a/projects/mmdet3d_plugin/bevformer/modules/spatial_cross_attention.py b/projects/mmdet3d_plugin/bevformer/modules/spatial_cross_attention.py
+index 100d94f..0d1b2e9 100644
+--- a/projects/mmdet3d_plugin/bevformer/modules/spatial_cross_attention.py
++++ b/projects/mmdet3d_plugin/bevformer/modules/spatial_cross_attention.py
+@@ -20,12 +20,7 @@ from mmcv.runner import force_fp32, auto_fp16
+ 
+ from mmcv.runner.base_module import BaseModule, ModuleList, Sequential
+ 
+-from mmcv.utils import ext_loader
+-from .multi_scale_deformable_attn_function import MultiScaleDeformableAttnFunction_fp32, \
+-    MultiScaleDeformableAttnFunction_fp16
+-from projects.mmdet3d_plugin.models.utils.bricks import run_time
+-ext_module = ext_loader.load_ext(
+-    '_ext', ['ms_deform_attn_backward', 'ms_deform_attn_forward'])
++from projects.mmdet3d_plugin.models.utils.bricks import run_time
+ 
+ 
+ @ATTENTION.register_module()
+@@ -382,17 +377,8 @@ class MSDeformableAttention3D(BaseModule):
+         #  attention_weights.shape: bs, num_query, num_heads, num_levels, num_all_points
+         #
+ 
+-        if torch.cuda.is_available() and value.is_cuda:
+-            if value.dtype == torch.float16:
+-                MultiScaleDeformableAttnFunction = MultiScaleDeformableAttnFunction_fp32
+-            else:
+-                MultiScaleDeformableAttnFunction = MultiScaleDeformableAttnFunction_fp32
+-            output = MultiScaleDeformableAttnFunction.apply(
+-                value, spatial_shapes, level_start_index, sampling_locations,
+-                attention_weights, self.im2col_step)
+-        else:
+-            output = multi_scale_deformable_attn_pytorch(
+-                value, spatial_shapes, sampling_locations, attention_weights)
++        output = multi_scale_deformable_attn_pytorch(
++            value, spatial_shapes, sampling_locations, attention_weights)
+         if not self.batch_first:
+             output = output.permute(1, 0, 2)
+ 
+diff --git a/projects/mmdet3d_plugin/bevformer/modules/temporal_self_attention.py b/projects/mmdet3d_plugin/bevformer/modules/temporal_self_attention.py
+index 78fb9f5..34bcdec 100644
+--- a/projects/mmdet3d_plugin/bevformer/modules/temporal_self_attention.py
++++ b/projects/mmdet3d_plugin/bevformer/modules/temporal_self_attention.py
+@@ -5,8 +5,7 @@
+ # ---------------------------------------------
+ 
+ from projects.mmdet3d_plugin.models.utils.bricks import run_time
+-from .multi_scale_deformable_attn_function import MultiScaleDeformableAttnFunction_fp32
+-from mmcv.ops.multi_scale_deform_attn import multi_scale_deformable_attn_pytorch
++from mmcv.ops.multi_scale_deform_attn import multi_scale_deformable_attn_pytorch
+ import warnings
+ import torch
+ import torch.nn as nn
+@@ -17,9 +16,6 @@ from mmcv.runner.base_module import BaseModule, ModuleList, Sequential
+ from mmcv.utils import (ConfigDict, build_from_cfg, deprecated_api_warning,
+                         to_2tuple)
+ 
+-from mmcv.utils import ext_loader
+-ext_module = ext_loader.load_ext(
+-    '_ext', ['ms_deform_attn_backward', 'ms_deform_attn_forward'])
+ 
+ 
+ @ATTENTION.register_module()
+@@ -237,20 +233,8 @@ class TemporalSelfAttention(BaseModule):
+             raise ValueError(
+                 f'Last dim of reference_points must be'
+                 f' 2 or 4, but get {reference_points.shape[-1]} instead.')
+-        if torch.cuda.is_available() and value.is_cuda:
+-
+-            # using fp16 deformable attention is unstable because it performs many sum operations
+-            if value.dtype == torch.float16:
+-                MultiScaleDeformableAttnFunction = MultiScaleDeformableAttnFunction_fp32
+-            else:
+-                MultiScaleDeformableAttnFunction = MultiScaleDeformableAttnFunction_fp32
+-            output = MultiScaleDeformableAttnFunction.apply(
+-                value, spatial_shapes, level_start_index, sampling_locations,
+-                attention_weights, self.im2col_step)
+-        else:
+-
+-            output = multi_scale_deformable_attn_pytorch(
+-                value, spatial_shapes, sampling_locations, attention_weights)
++        output = multi_scale_deformable_attn_pytorch(
++            value, spatial_shapes, sampling_locations, attention_weights)
+ 
+         # output shape (bs*num_bev_queue, num_query, embed_dims)
+         # (bs*num_bev_queue, num_query, embed_dims)-> (num_query, embed_dims, bs*num_bev_queue)
+diff --git a/projects/mmdet3d_plugin/models/utils/bricks.py b/projects/mmdet3d_plugin/models/utils/bricks.py
+index fd45881..44516c8 100644
+--- a/projects/mmdet3d_plugin/models/utils/bricks.py
++++ b/projects/mmdet3d_plugin/models/utils/bricks.py
+@@ -7,14 +7,15 @@ count_maps = defaultdict(lambda :0.)
+ def run_time(name):
+     def middle(fn):
+         def wrapper(*args, **kwargs):
+-            torch.cuda.synchronize()
++            if hasattr(torch, 'musa'):
++                torch.musa.synchronize()
+             start = time.time()
+             res = fn(*args, **kwargs)
+-            torch.cuda.synchronize()
++            if hasattr(torch, 'musa'):
++                torch.musa.synchronize()
+             time_maps['%s : %s'%(name, fn.__name__) ] += time.time()-start
+             count_maps['%s : %s'%(name, fn.__name__) ] +=1
+             print("%s : %s takes up %f "% (name, fn.__name__,time_maps['%s : %s'%(name, fn.__name__) ] /count_maps['%s : %s'%(name, fn.__name__) ] ))
+             return res
+         return wrapper
+     return middle
+-    
+\ No newline at end of file
+diff --git a/projects/mmdet3d_plugin/models/utils/grid_mask.py b/projects/mmdet3d_plugin/models/utils/grid_mask.py
+index 3d04b2c..305a3d3 100755
+--- a/projects/mmdet3d_plugin/models/utils/grid_mask.py
++++ b/projects/mmdet3d_plugin/models/utils/grid_mask.py
+@@ -111,14 +111,14 @@ class GridMask(nn.Module):
+         mask = np.asarray(mask)
+         mask = mask[(hh-h)//2:(hh-h)//2+h, (ww-w)//2:(ww-w)//2+w]
+ 
+-        mask = torch.from_numpy(mask).to(x.dtype).cuda()
++        mask = torch.from_numpy(mask).to(device=x.device, dtype=x.dtype)
+         if self.mode == 1:
+             mask = 1-mask
+         mask = mask.expand_as(x)
+         if self.offset:
+-            offset = torch.from_numpy(2 * (np.random.rand(h,w) - 0.5)).to(x.dtype).cuda()
++            offset = torch.from_numpy(2 * (np.random.rand(h,w) - 0.5)).to(device=x.device, dtype=x.dtype)
+             x = x * mask + offset * (1 - mask)
+         else:
+             x = x * mask 
+         
+-        return x.view(n,c,h,w)
+\ No newline at end of file
++        return x.view(n,c,h,w)
+diff --git a/tools/analysis_tools/benchmark.py b/tools/analysis_tools/benchmark.py
+index 487a348..9c20d7f 100755
+--- a/tools/analysis_tools/benchmark.py
++++ b/tools/analysis_tools/benchmark.py
+@@ -34,9 +34,7 @@ def main():
+     args = parse_args()
+ 
+     cfg = Config.fromfile(args.config)
+-    # set cudnn_benchmark
+-    if cfg.get('cudnn_benchmark', False):
+-        torch.backends.cudnn.benchmark = True
++    # CUDA-only cuDNN controls do not apply to the MUSA baseline.
+     cfg.model.pretrained = None
+     cfg.data.test.test_mode = True
+ 
+@@ -72,12 +70,12 @@ def main():
+ 
+     # benchmark with several samples and take the average
+     for i, data in enumerate(data_loader):
+-        torch.cuda.synchronize()
++        torch.musa.synchronize()
+         start_time = time.perf_counter()
+         with torch.no_grad():
+             model(return_loss=False, rescale=True, **data)
+ 
+-        torch.cuda.synchronize()
++        torch.musa.synchronize()
+         elapsed = time.perf_counter() - start_time
+ 
+         if i >= num_warmup:
+diff --git a/tools/test.py b/tools/test.py
+index acce20b..9875e4a 100755
+--- a/tools/test.py
++++ b/tools/test.py
+@@ -154,13 +154,7 @@ def main():
+                 print(_module_path)
+                 plg_lib = importlib.import_module(_module_path)
+ 
+-    # set cudnn_benchmark
+-    if cfg.get('cudnn_benchmark', False):
+-        torch.backends.cudnn.benchmark = True
+-    # set tf32
+-    if cfg.get('close_tf32', False):
+-        torch.backends.cuda.matmul.allow_tf32 = False
+-        torch.backends.cudnn.allow_tf32 = False
++    # CUDA-only cuDNN/TF32 controls do not apply to the MUSA baseline.
+ 
+     cfg.model.pretrained = None
+     # in case the test dataset is concatenated
+@@ -231,8 +225,8 @@ def main():
+         # outputs = single_gpu_test(model, data_loader, args.show, args.show_dir)
+     else:
+         model = MMDistributedDataParallel(
+-            model.cuda(),
+-            device_ids=[torch.cuda.current_device()],
++            model.to('musa'),
++            device_ids=[torch.musa.current_device()] if hasattr(torch, 'musa') else None,
+             broadcast_buffers=False)
+         outputs = custom_multi_gpu_test(model, data_loader, args.tmpdir,
+                                         args.gpu_collect)
+diff --git a/tools/train.py b/tools/train.py
+index d6e65c1..1cf2413 100755
+--- a/tools/train.py
++++ b/tools/train.py
+@@ -135,13 +135,7 @@ def main():
+                 plg_lib = importlib.import_module(_module_path)
+ 
+             from projects.mmdet3d_plugin.bevformer.apis.train import custom_train_model
+-    # set cudnn_benchmark
+-    if cfg.get('cudnn_benchmark', False):
+-        torch.backends.cudnn.benchmark = True
+-    # set tf32
+-    if cfg.get('close_tf32', False):
+-        torch.backends.cuda.matmul.allow_tf32 = False
+-        torch.backends.cudnn.allow_tf32 = False
++    # CUDA-only cuDNN/TF32 controls do not apply to the MUSA baseline.
+ 
+     # work_dir is determined in this priority: CLI > segment in file > filename
+     if args.work_dir is not None:
+

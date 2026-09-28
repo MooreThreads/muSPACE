@@ -1,0 +1,13 @@
+# LingBot-VA runs on the muSPACE-supported PyTorch/torch_musa stack plus the
+# CUDA-compatibility layer that FlexAttention requires:
+#
+#   torch, torch_musa   matching versions from the MUSA 5.2.0 image
+#   torchada==0.1.86    CUDA API compatibility layer used by FlexAttention on MUSA
+#   diffusers==0.36.0   WanTransformer3DModel, AutoencoderKLWan, embeddings
+#   einops, easydict    model and config dependencies
+#   lerobot==0.3.3      only for `--mode train` (LeRobot-Latent dataset loading)
+#   websockets, msgpack imported by `wan_va.utils` (remote-inference server module)
+#
+# flash-attn is not required: the `flashattn` attention mode uses PyTorch SDPA
+# with `SDPBackend.FLASH_ATTENTION` and a dense boolean mask, not the
+# flash-attn package.

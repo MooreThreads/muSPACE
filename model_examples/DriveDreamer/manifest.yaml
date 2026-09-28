@@ -1,0 +1,12 @@
+name: DriveDreamer
+repository: https://github.com/JeffWang987/DriveDreamer.git
+reference_branch: main
+reference_commit: da1ca92f831bc23d91b59ad418eb47b41cbb1fa9
+default_checkout: DriveDreamer
+integration:
+  maintains_fork: false
+  runtime_patchers: []
+  strict_backend: musa
+  execution: torch_musa
+patch_marker: .mu_space_drivedreamer.json
+patches: []

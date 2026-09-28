@@ -1,0 +1,13 @@
+# Build and install the BEVFormer OpenMMLab compatibility wheels first.
+mmdet==2.14.0
+mmsegmentation==0.14.1
+timm
+nuscenes-devkit
+pyquaternion
+plyfile
+shapely<2
+# mmdet3d imports numba during dataset construction; 0.57 does not support NumPy 1.26.
+numba==0.59.1
+llvmlite==0.42.0
+lyft_dataset_sdk==0.0.8
+ipython

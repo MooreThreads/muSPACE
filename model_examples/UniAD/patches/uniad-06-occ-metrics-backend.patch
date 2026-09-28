@@ -1,0 +1,37 @@
+diff --git a/projects/mmdet3d_plugin/uniad/dense_heads/occ_head_plugin/metrics.py b/projects/mmdet3d_plugin/uniad/dense_heads/occ_head_plugin/metrics.py
+index aa61597..a859a81 100644
+--- a/projects/mmdet3d_plugin/uniad/dense_heads/occ_head_plugin/metrics.py
++++ b/projects/mmdet3d_plugin/uniad/dense_heads/occ_head_plugin/metrics.py
+@@ -7,9 +7,29 @@
+ from typing import Optional
+ 
+ import torch
+-from pytorch_lightning.metrics.metric import Metric
+-from pytorch_lightning.metrics.functional.classification import stat_scores_multiple_classes
+-from pytorch_lightning.metrics.functional.reduction import reduce
++from torchmetrics import Metric
++
++
++def stat_scores_multiple_classes(prediction, target, num_classes):
++    prediction = prediction.reshape(-1).long()
++    target = target.reshape(-1).long()
++    valid = (target >= 0) & (target < num_classes)
++    prediction = prediction[valid]
++    target = target[valid]
++    matrix = torch.bincount(
++        target * num_classes + prediction,
++        minlength=num_classes * num_classes,
++    ).reshape(num_classes, num_classes)
++    true_positive = matrix.diag()
++    support = matrix.sum(dim=1)
++    false_positive = matrix.sum(dim=0) - true_positive
++    false_negative = support - true_positive
++    true_negative = matrix.sum() - true_positive - false_positive - false_negative
++    return true_positive, false_positive, true_negative, false_negative, support
++
++
++def reduce(values, reduction):
++    return values if reduction == 'none' else getattr(values, reduction)()
+ 
+ class IntersectionOverUnion(Metric):
+     """Computes intersection-over-union."""

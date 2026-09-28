@@ -1,0 +1,480 @@
+diff --git a/wan_va/dataset/lerobot_latent_dataset.py b/wan_va/dataset/lerobot_latent_dataset.py
+index b286087..373ccec 100644
+--- a/wan_va/dataset/lerobot_latent_dataset.py
++++ b/wan_va/dataset/lerobot_latent_dataset.py
+@@ -47,6 +47,8 @@ def construct_lerobot_multi_processor(config,
+     )
+     repo_list = recursive_find_file(config.dataset_path, 'info.json')
+     repo_list = [v.split('/meta/info.json')[0] for v in repo_list]
++    if num_init_worker <= 1:
++        return [construct_func(repo_id) for repo_id in repo_list]
+     with Pool(num_init_worker) as pool:
+         datasets_out_lst = pool.map(construct_func, repo_list)
+                 
+@@ -142,9 +144,13 @@ class LatentLeRobotDataset(LeRobotDataset):
+         self.episode_data_index = get_episode_data_index(self.meta.episodes, self.episodes)
+         
+         self.latent_path = Path(repo_id) / 'latents'
+-        self.empty_emb = torch.load(config.empty_emb_path, weights_only=False)
+         self.config = config
+         self.cfg_prob = config.cfg_prob
++        self.empty_emb = (
++            torch.load(config.empty_emb_path, weights_only=False)
++            if self.cfg_prob > 0
++            else None
++        )
+         self.used_video_keys = config.obs_cam_keys
+         self.q01 = np.array(config.norm_stat['q01'], dtype='float')[None]
+         self.q99 = np.array(config.norm_stat['q99'], dtype='float')[None]
+diff --git a/wan_va/distributed/fsdp.py b/wan_va/distributed/fsdp.py
+index 44d1763..303c565 100644
+--- a/wan_va/distributed/fsdp.py
++++ b/wan_va/distributed/fsdp.py
+@@ -4,6 +4,8 @@ import gc
+ import torch
+ from torch.distributed.fsdp import fully_shard, MixedPrecisionPolicy
+ 
++from utils.device import empty_cache
++
+ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
+     checkpoint_wrapper as ptd_checkpoint_wrapper,
+ )
+@@ -38,4 +40,4 @@ def shard_model(model,
+ def free_model(model):
+     del model
+     gc.collect()
+-    torch.cuda.empty_cache()
++    empty_cache()
+diff --git a/wan_va/distributed/util.py b/wan_va/distributed/util.py
+index 8ad7c29..f17ebf9 100644
+--- a/wan_va/distributed/util.py
++++ b/wan_va/distributed/util.py
+@@ -2,6 +2,8 @@
+ import torch
+ import torch.distributed as dist
+ 
++from utils.device import get_dist_backend, set_device
++
+ 
+ def _configure_model(model, shard_fn, param_dtype, device, eval_mode=True):
+     """
+@@ -23,18 +25,18 @@ def _configure_model(model, shard_fn, param_dtype, device, eval_mode=True):
+ 
+ def init_distributed(world_size, local_rank, rank):
+     # if world_size > 1:
+-    torch.cuda.set_device(local_rank)
+-    dist.init_process_group(backend="nccl",
++    set_device(local_rank)
++    dist.init_process_group(backend=get_dist_backend(),
+                             init_method="env://",
+                             rank=rank,
+                             world_size=world_size)
+ 
+ def dist_mean(local_tensor):
+-    if dist.is_initialized():
++    if dist.is_initialized() and dist.get_world_size() > 1:
+         dist.all_reduce(local_tensor, op=dist.ReduceOp.AVG)
+     return local_tensor
+ 
+ def dist_max(local_tensor):
+-    if dist.is_initialized():
++    if dist.is_initialized() and dist.get_world_size() > 1:
+         dist.all_reduce(local_tensor, op=dist.ReduceOp.MAX)
+     return local_tensor
+diff --git a/wan_va/utils/device.py b/wan_va/utils/device.py
+new file mode 100644
+index 0000000..354f15c
+--- /dev/null
++++ b/wan_va/utils/device.py
+@@ -0,0 +1,146 @@
++# Copyright 2024-2025 The Robbyant Team Authors. All rights reserved.
++"""Device helpers for CUDA and Moore Threads MUSA backends."""
++from __future__ import annotations
++
++import os
++import sys
++from typing import Optional
++
++import torch
++
++_DEVICE_TYPE: Optional[str] = None
++
++
++def _ensure_torch_musa() -> None:
++    if not hasattr(torch, "musa"):
++        try:
++            import torch_musa  # noqa: F401
++        except ImportError:
++            pass
++
++
++def is_torchada_active() -> bool:
++    return "torchada" in sys.modules
++
++
++def use_cuda_api() -> bool:
++    """Use torch.cuda.* device strings/APIs (including torchada on MUSA)."""
++    return is_cuda() or (is_musa() and is_torchada_active())
++
++
++def get_device_type() -> str:
++    """Return ``cuda``, ``musa``, or ``cpu``."""
++    global _DEVICE_TYPE
++    if _DEVICE_TYPE is not None:
++        return _DEVICE_TYPE
++
++    forced = os.environ.get("LINGBOT_DEVICE", "auto").lower()
++    if forced in {"cuda", "musa", "cpu"}:
++        _DEVICE_TYPE = forced
++        return _DEVICE_TYPE
++
++    _ensure_torch_musa()
++    if hasattr(torch, "musa") and torch.musa.is_available():
++        _DEVICE_TYPE = "musa"
++    elif torch.cuda.is_available():
++        _DEVICE_TYPE = "cuda"
++    else:
++        _DEVICE_TYPE = "cpu"
++    return _DEVICE_TYPE
++
++
++def is_musa() -> bool:
++    return get_device_type() == "musa"
++
++
++def is_cuda() -> bool:
++    return get_device_type() == "cuda"
++
++
++def is_accelerator_available() -> bool:
++    return get_device_type() in {"cuda", "musa"}
++
++
++def get_device_count() -> int:
++    if use_cuda_api():
++        return torch.cuda.device_count()
++    if is_musa():
++        return torch.musa.device_count()
++    if is_cuda():
++        return torch.cuda.device_count()
++    return 0
++
++
++def get_torch_device(rank: int = 0) -> torch.device:
++    if use_cuda_api():
++        return torch.device(f"cuda:{rank}")
++    if is_musa():
++        return torch.device(f"musa:{rank}")
++    if is_cuda():
++        return torch.device(f"cuda:{rank}")
++    return torch.device("cpu")
++
++
++def get_device_name(rank: int = 0) -> str:
++    if is_musa():
++        return torch.musa.get_device_name(rank)
++    if use_cuda_api() or is_cuda():
++        try:
++            return torch.cuda.get_device_name(rank)
++        except Exception:
++            return torch.musa.get_device_name(rank)
++    return "cpu"
++
++
++def set_device(rank: int) -> None:
++    if use_cuda_api() or is_cuda():
++        torch.cuda.set_device(rank)
++    elif is_musa():
++        torch.musa.set_device(rank)
++
++
++def empty_cache() -> None:
++    if use_cuda_api() or is_cuda():
++        torch.cuda.empty_cache()
++    elif is_musa():
++        torch.musa.empty_cache()
++
++
++def synchronize() -> None:
++    if use_cuda_api() or is_cuda():
++        torch.cuda.synchronize()
++    elif is_musa():
++        torch.musa.synchronize()
++
++
++def is_on_accelerator(obj: torch.Tensor) -> bool:
++    if not torch.is_tensor(obj):
++        return False
++    return obj.device.type in {"cuda", "musa"}
++
++
++def get_dist_backend() -> str:
++    override = os.environ.get("LINGBOT_DIST_BACKEND")
++    if override:
++        return override
++    if use_cuda_api():
++        return "nccl"
++    if is_musa():
++        return "mccl"
++    if is_cuda():
++        return "nccl"
++    return "gloo"
++
++
++def default_attn_mode(preferred: str = "torch") -> str:
++    if is_musa() and not is_torchada_active() and preferred in {"flex", "flashattn"}:
++        return "torch"
++    return preferred
++
++
++def supports_flex_attention() -> bool:
++    if os.environ.get("LINGBOT_DISABLE_FLEX", "0") == "1":
++        return False
++    if is_musa() and not is_torchada_active():
++        return False
++    return True
+diff --git a/wan_va/utils/musa_bootstrap.py b/wan_va/utils/musa_bootstrap.py
+new file mode 100644
+index 0000000..d93882f
+--- /dev/null
++++ b/wan_va/utils/musa_bootstrap.py
+@@ -0,0 +1,79 @@
++# Copyright 2024-2025 The Robbyant Team Authors. All rights reserved.
++"""Bootstrap torchada and MUSA-specific patches before model imports."""
++from __future__ import annotations
++
++import os
++import sys
++import warnings
++
++_TORCHADA_TRIED = False
++
++
++def _should_use_torchada() -> bool:
++    if os.environ.get("LINGBOT_DISABLE_TORCHADA", "0") == "1":
++        return False
++    forced = os.environ.get("LINGBOT_DEVICE", "auto").lower()
++    if forced in {"cuda", "cpu"}:
++        return False
++    if forced == "musa":
++        return True
++    try:
++        import torch
++
++        return hasattr(torch, "musa") and torch.musa.is_available()
++    except ImportError:
++        return False
++
++
++def bootstrap_torchada() -> bool:
++    """Load torchada so CUDA APIs and flex_attention work on MUSA."""
++    global _TORCHADA_TRIED
++    if _TORCHADA_TRIED:
++        return "torchada" in sys.modules
++    _TORCHADA_TRIED = True
++
++    if not _should_use_torchada():
++        return False
++
++    try:
++        import torchada  # noqa: F401
++        return True
++    except ImportError:
++        warnings.warn(
++            "MUSA platform detected but torchada is not installed; "
++            "flex attention will fall back to torch SDPA.",
++            stacklevel=2,
++        )
++        return False
++
++
++def patch_diffusers_for_musa() -> None:
++    import diffusers.utils.import_utils as import_utils
++
++    import_utils._flash_attn_available = False
++    import_utils._flash_attn_3_available = False
++
++
++def patch_flash_attn_for_musa() -> None:
++    try:
++        import flash_attn
++        import flash_attn.flash_attn_interface as interface
++    except ImportError:
++        return
++
++    if not hasattr(flash_attn, "flash_attn_func") and hasattr(interface, "flash_attn_func"):
++        flash_attn.flash_attn_func = interface.flash_attn_func
++    if not hasattr(flash_attn, "flash_attn_varlen_func") and hasattr(
++        interface, "flash_attn_varlen_func"
++    ):
++        flash_attn.flash_attn_varlen_func = interface.flash_attn_varlen_func
++
++
++def bootstrap_musa() -> None:
++    bootstrap_torchada()
++    from .device import is_musa
++
++    if not is_musa():
++        return
++    patch_flash_attn_for_musa()
++    patch_diffusers_for_musa()
+diff --git a/wan_va/utils/sever_utils.py b/wan_va/utils/sever_utils.py
+index 8615919..5194fd8 100644
+--- a/wan_va/utils/sever_utils.py
++++ b/wan_va/utils/sever_utils.py
+@@ -2,6 +2,7 @@
+ import torch
+ import torch.distributed as dist
+ 
++from .device import get_torch_device, is_accelerator_available
+ from .logging import logger
+ from .Simple_Remote_Infer.deploy.websocket_policy_server import WebsocketPolicyServer
+ 
+@@ -26,9 +27,11 @@ def distributed_infer(model, obs, local_rank):
+     rank = dist.get_rank()
+     assert rank == local_rank, "distributed_infer can only run at（rank 0)"
+ 
++    device = get_torch_device(local_rank) if is_accelerator_available() else torch.device("cpu")
++
+     cmd = torch.tensor(1,
+                        dtype=torch.int64,
+-                       device='cuda' if torch.cuda.is_available() else 'cpu')
++                       device=device)
+     dist.broadcast(cmd, src=0)
+ 
+     obj_list = [obs]
+@@ -43,7 +46,7 @@ def worker_loop(model, local_rank):
+     """
+     TODO
+     """
+-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
++    device = get_torch_device(local_rank) if is_accelerator_available() else torch.device("cpu")
+     rank = dist.get_rank()
+ 
+     while True:
+@@ -74,7 +77,7 @@ def run_async_server_mode(model, local_rank, host, port):
+         cmd = torch.tensor(
+             -1,
+             dtype=torch.int64,
+-            device='cuda' if torch.cuda.is_available() else 'cpu')
++            device=get_torch_device(local_rank) if is_accelerator_available() else torch.device("cpu"))
+         dist.broadcast(cmd, src=0)
+     else:
+         try:
+diff --git a/wan_va/utils/utils.py b/wan_va/utils/utils.py
+index a0d6326..e36cb47 100644
+--- a/wan_va/utils/utils.py
++++ b/wan_va/utils/utils.py
+@@ -4,6 +4,8 @@ import concurrent.futures
+ import numpy as np
+ import torch
+ 
++from .device import is_on_accelerator
++
+ executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+ 
+ __all__ = ['get_mesh_id', 'save_async', 'data_seq_to_patch']
+@@ -60,7 +62,7 @@ def save_async(obj, file_path):
+     if torch.is_tensor(obj) or (isinstance(obj, dict) and any(
+             torch.is_tensor(v) for v in obj.values())):
+         if torch.is_tensor(obj):
+-            if obj.is_cuda:
++            if is_on_accelerator(obj):
+                 obj = obj.cpu()
+         elif isinstance(obj, dict):
+             obj = {
+diff --git a/wan_va/wan_va_server.py b/wan_va/wan_va_server.py
+index 4c95ace..58aaa6a 100644
+--- a/wan_va/wan_va_server.py
++++ b/wan_va/wan_va_server.py
+@@ -2,6 +2,12 @@
+ import argparse
+ import os
+ import sys
++
++sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++from utils.musa_bootstrap import bootstrap_musa
++
++bootstrap_musa()
++
+ import time
+ from functools import partial
+ from PIL import Image
+@@ -36,6 +42,7 @@ from utils import (
+     run_async_server_mode,
+     save_async,
+ )
++from utils.device import empty_cache, get_torch_device
+ 
+ 
+ class VA_Server:
+@@ -45,7 +52,7 @@ class VA_Server:
+         self.job_config = job_config
+         self.save_root = job_config.save_root
+         self.dtype = job_config.param_dtype
+-        self.device = torch.device(f"cuda:{job_config.local_rank}")
++        self.device = get_torch_device(job_config.local_rank)
+         self.enable_offload = getattr(job_config, 'enable_offload', True)  # offload vae & text_encoder to save vram
+ 
+         self.scheduler = FlowMatchScheduler(shift=self.job_config.snr_shift,
+@@ -82,7 +89,7 @@ class VA_Server:
+                          'transformer'),
+             torch_dtype=self.dtype,
+             torch_device=self.device,
+-            attn_mode="torch"
++            attn_mode=os.environ.get("LINGBOT_INFER_ATTN_MODE", "flashattn")
+         )
+         shard_fn = shard_model
+         self.transformer = _configure_model(model=self.transformer,
+@@ -438,7 +445,7 @@ class VA_Server:
+         self.exp_name = f"{prompt}_{time.strftime('%Y%m%d_%H%M%S')}" if prompt else "default"
+         self.exp_save_root = os.path.join(self.save_root, 'real', self.exp_name)
+         os.makedirs(self.exp_save_root, exist_ok=True)
+-        torch.cuda.empty_cache()
++        empty_cache()
+ 
+     def _infer(self, obs, frame_st_id=0):
+         frame_chunk_size = self.job_config.frame_chunk_size
+@@ -566,7 +573,7 @@ class VA_Server:
+         save_async(actions, os.path.join(self.exp_save_root, f'actions_{frame_st_id}.pt'))
+ 
+         actions = self.postprocess_action(actions)
+-        torch.cuda.empty_cache()
++        empty_cache()
+         return actions, latents
+ 
+     def _compute_kv_cache(self, obs):
+@@ -600,7 +607,7 @@ class VA_Server:
+                              update_cache=2,
+                              cache_name=self.cache_name,
+                              action_mode=True)
+-        torch.cuda.empty_cache()
++        empty_cache()
+         self.frame_st_id += latent_model_input.shape[2]
+ 
+     @torch.no_grad()
+@@ -665,7 +672,7 @@ class VA_Server:
+         del self.transformer
+         del self.streaming_vae_half
+         del self.text_encoder
+-        torch.cuda.empty_cache()
++        empty_cache()
+         
+         # Move VAE to GPU for decoding
+         if self.enable_offload:
+@@ -677,6 +684,15 @@ class VA_Server:
+ def run(args):    
+     
+     config = VA_CONFIGS[args.config_name]
++    model_path = os.environ.get("LINGBOT_MODEL_PATH")
++    if model_path:
++        config.wan22_pretrained_model_name_or_path = model_path
++    video_steps = os.environ.get("LINGBOT_VIDEO_STEPS")
++    if video_steps is not None:
++        config.num_inference_steps = int(video_steps)
++    action_steps = os.environ.get("LINGBOT_ACTION_STEPS")
++    if action_steps is not None:
++        config.action_num_inference_steps = int(action_steps)
+     port = config.port if args.port is None else args.port
+     if args.save_root is not None:
+         config.save_root = args.save_root

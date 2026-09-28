@@ -1,0 +1,22 @@
+#ifndef MUSPACE_MUSA_KERNEL_HELPER_MUH_
+#define MUSPACE_MUSA_KERNEL_HELPER_MUH_
+
+#include <musa.h>
+#include <musa_fp16.h>
+
+#define MUSPACE_MUSA_1D_KERNEL_LOOP(i, n) \
+  for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < (n); i += blockDim.x * gridDim.x)
+
+#define MUSA_1D_KERNEL_LOOP MUSPACE_MUSA_1D_KERNEL_LOOP
+
+using phalf = half;
+
+#define __PHALF(x) (x)
+
+#if defined(__MUSA_ARCH__) && __MUSA_ARCH__ >= 310
+#define __SYNCTHREADS_LM __syncthreads_lm()
+#else
+#define __SYNCTHREADS_LM __syncthreads()
+#endif
+
+#endif  // MUSPACE_MUSA_KERNEL_HELPER_MUH_

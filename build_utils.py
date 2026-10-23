@@ -13,6 +13,7 @@ EXTENSION_SOURCES = (
     "csrc/ffi/muspace_ops.mu",
     "csrc/pooling/bev_pool_musa.mu",
     "csrc/pooling/bev_pool_v2_musa.mu",
+    "csrc/pooling/voxel_pool_depth_musa.mu",
     "csrc/flashbev/flash_bevpool_sca_musa.mu",
     "csrc/flashbev/flash_bevpool_musa.mu",
     "csrc/deformable_aggregation/deformable_aggregation_musa.mu",

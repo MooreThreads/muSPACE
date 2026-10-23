@@ -3,6 +3,7 @@
 #include <tvm/ffi/function.h>
 
 #include <cmath>
+#include <limits>
 
 #include "../ffi/fast_divmod.hpp"
 #include "../ffi/tensor_utils.hpp"
@@ -19,11 +20,18 @@ namespace {
 constexpr int kThreads   = 128;
 constexpr int kMaxGroups = 8;
 
-inline int blocks_for(const int64_t size) {
+inline int64_t blocks_for(const int64_t size) {
   if (size <= 0) {
     return 0;
   }
-  return static_cast<int>((size + kThreads - 1) / kThreads);
+  return (size + kThreads - 1) / kThreads;
+}
+
+// Launch grid for a kernel that tiles the flat index space; the hardware limit is 32 bits.
+inline unsigned int grid_dim(const int64_t blocks) {
+  TVM_FFI_ICHECK(blocks <= static_cast<int64_t>(std::numeric_limits<unsigned int>::max()))
+      << "deformable aggregation launch grid is too large: " << blocks << " blocks";
+  return static_cast<unsigned int>(blocks);
 }
 
 __device__ float bilinear_sampling(const float*& bottom_data,
@@ -147,22 +155,22 @@ __device__ void bilinear_sampling_grad(const float*& bottom_data,
   atomicAdd(grad_sampling_location + 1, height * grad_h_weight * top_grad_mc_ms_feat);
 }
 
-__global__ void deformable_aggregation_kernel(const int    num_kernels,
-                                              float*       output,
-                                              const float* mc_ms_feat,
-                                              const int*   spatial_shape,
-                                              const int*   scale_start_index,
-                                              const float* sample_location,
-                                              const float* weights,
-                                              int          batch_size,
-                                              int          num_cams,
-                                              int          num_feat,
-                                              int          num_embeds,
-                                              int          num_scale,
-                                              int          num_anchors,
-                                              int          num_pts,
-                                              int          num_groups) {
-  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+__global__ void deformable_aggregation_kernel(const int64_t num_kernels,
+                                              float*        output,
+                                              const float*  mc_ms_feat,
+                                              const int*    spatial_shape,
+                                              const int*    scale_start_index,
+                                              const float*  sample_location,
+                                              const float*  weights,
+                                              int           batch_size,
+                                              int           num_cams,
+                                              int           num_feat,
+                                              int           num_embeds,
+                                              int           num_scale,
+                                              int           num_anchors,
+                                              int           num_pts,
+                                              int           num_groups) {
+  int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (idx >= num_kernels) return;
 
   const float weight        = *(weights + idx / (num_embeds / num_groups));
@@ -203,25 +211,25 @@ __global__ void deformable_aggregation_kernel(const int    num_kernels,
             bilinear_sampling(mc_ms_feat, h, w, num_embeds, h_im, w_im, value_offset) * weight);
 }
 
-__global__ void deformable_aggregation_grad_kernel(const int    num_kernels,
-                                                   const float* mc_ms_feat,
-                                                   const int*   spatial_shape,
-                                                   const int*   scale_start_index,
-                                                   const float* sample_location,
-                                                   const float* weights,
-                                                   const float* grad_output,
-                                                   float*       grad_mc_ms_feat,
-                                                   float*       grad_sampling_location,
-                                                   float*       grad_weights,
-                                                   int          batch_size,
-                                                   int          num_cams,
-                                                   int          num_feat,
-                                                   int          num_embeds,
-                                                   int          num_scale,
-                                                   int          num_anchors,
-                                                   int          num_pts,
-                                                   int          num_groups) {
-  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+__global__ void deformable_aggregation_grad_kernel(const int64_t num_kernels,
+                                                   const float*  mc_ms_feat,
+                                                   const int*    spatial_shape,
+                                                   const int*    scale_start_index,
+                                                   const float*  sample_location,
+                                                   const float*  weights,
+                                                   const float*  grad_output,
+                                                   float*        grad_mc_ms_feat,
+                                                   float*        grad_sampling_location,
+                                                   float*        grad_weights,
+                                                   int           batch_size,
+                                                   int           num_cams,
+                                                   int           num_feat,
+                                                   int           num_embeds,
+                                                   int           num_scale,
+                                                   int           num_anchors,
+                                                   int           num_pts,
+                                                   int           num_groups) {
+  int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (idx >= num_kernels) return;
 
   const int weights_ptr   = idx / (num_embeds / num_groups);
@@ -437,25 +445,25 @@ void launch_deformable_aggregation_forward_base(float*       output,
                                                 musaStream_t current_stream) {
   const int64_t num_kernels =
       static_cast<int64_t>(batch_size) * num_pts * num_embeds * num_anchors * num_cams * num_scale;
-  const int blocks = blocks_for(num_kernels);
+  const int64_t blocks = blocks_for(num_kernels);
   if (blocks == 0) {
     return;
   }
-  deformable_aggregation_kernel<<<blocks, kThreads, 0, current_stream>>>(static_cast<int>(num_kernels),
-                                                                         output,
-                                                                         mc_ms_feat,
-                                                                         spatial_shape,
-                                                                         scale_start_index,
-                                                                         sample_location,
-                                                                         weights,
-                                                                         batch_size,
-                                                                         num_cams,
-                                                                         num_feat,
-                                                                         num_embeds,
-                                                                         num_scale,
-                                                                         num_anchors,
-                                                                         num_pts,
-                                                                         num_groups);
+  deformable_aggregation_kernel<<<grid_dim(blocks), kThreads, 0, current_stream>>>(num_kernels,
+                                                                                   output,
+                                                                                   mc_ms_feat,
+                                                                                   spatial_shape,
+                                                                                   scale_start_index,
+                                                                                   sample_location,
+                                                                                   weights,
+                                                                                   batch_size,
+                                                                                   num_cams,
+                                                                                   num_feat,
+                                                                                   num_embeds,
+                                                                                   num_scale,
+                                                                                   num_anchors,
+                                                                                   num_pts,
+                                                                                   num_groups);
 }
 
 void launch_deformable_aggregation_backward_base(const float* mc_ms_feat,
@@ -478,28 +486,28 @@ void launch_deformable_aggregation_backward_base(const float* mc_ms_feat,
                                                  musaStream_t current_stream) {
   const int64_t num_kernels =
       static_cast<int64_t>(batch_size) * num_pts * num_embeds * num_anchors * num_cams * num_scale;
-  const int blocks = blocks_for(num_kernels);
+  const int64_t blocks = blocks_for(num_kernels);
   if (blocks == 0) {
     return;
   }
-  deformable_aggregation_grad_kernel<<<blocks, kThreads, 0, current_stream>>>(static_cast<int>(num_kernels),
-                                                                              mc_ms_feat,
-                                                                              spatial_shape,
-                                                                              scale_start_index,
-                                                                              sample_location,
-                                                                              weights,
-                                                                              grad_output,
-                                                                              grad_mc_ms_feat,
-                                                                              grad_sampling_location,
-                                                                              grad_weights,
-                                                                              batch_size,
-                                                                              num_cams,
-                                                                              num_feat,
-                                                                              num_embeds,
-                                                                              num_scale,
-                                                                              num_anchors,
-                                                                              num_pts,
-                                                                              num_groups);
+  deformable_aggregation_grad_kernel<<<grid_dim(blocks), kThreads, 0, current_stream>>>(num_kernels,
+                                                                                        mc_ms_feat,
+                                                                                        spatial_shape,
+                                                                                        scale_start_index,
+                                                                                        sample_location,
+                                                                                        weights,
+                                                                                        grad_output,
+                                                                                        grad_mc_ms_feat,
+                                                                                        grad_sampling_location,
+                                                                                        grad_weights,
+                                                                                        batch_size,
+                                                                                        num_cams,
+                                                                                        num_feat,
+                                                                                        num_embeds,
+                                                                                        num_scale,
+                                                                                        num_anchors,
+                                                                                        num_pts,
+                                                                                        num_groups);
 }
 
 void launch_deformable_aggregation_forward_opt(float*       output,
@@ -519,29 +527,47 @@ void launch_deformable_aggregation_forward_opt(float*       output,
                                                musaStream_t current_stream) {
   const int64_t num_kernels =
       static_cast<int64_t>(batch_size) * num_pts * num_embeds * num_anchors * num_cams * num_scale;
-  const int blocks = blocks_for(num_kernels);
+  if (num_kernels > static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
+    launch_deformable_aggregation_forward_base(output,
+                                               mc_ms_feat,
+                                               spatial_shape,
+                                               scale_start_index,
+                                               sample_location,
+                                               weights,
+                                               batch_size,
+                                               num_cams,
+                                               num_feat,
+                                               num_embeds,
+                                               num_scale,
+                                               num_anchors,
+                                               num_pts,
+                                               num_groups,
+                                               current_stream);
+    return;
+  }
+  const int64_t blocks = blocks_for(num_kernels);
   if (blocks == 0) return;
-  deformable_aggregation_kernel_opt<<<blocks, kThreads, 0, current_stream>>>(static_cast<int>(num_kernels),
-                                                                             output,
-                                                                             mc_ms_feat,
-                                                                             spatial_shape,
-                                                                             scale_start_index,
-                                                                             sample_location,
-                                                                             weights,
-                                                                             batch_size,
-                                                                             num_cams,
-                                                                             num_feat,
-                                                                             num_embeds,
-                                                                             num_scale,
-                                                                             num_anchors,
-                                                                             num_pts,
-                                                                             num_groups,
-                                                                             FastDivmod(num_embeds),
-                                                                             FastDivmod(num_scale),
-                                                                             FastDivmod(num_cams),
-                                                                             FastDivmod(num_pts),
-                                                                             FastDivmod(num_anchors),
-                                                                             FastDivmod(batch_size));
+  deformable_aggregation_kernel_opt<<<grid_dim(blocks), kThreads, 0, current_stream>>>(num_kernels,
+                                                                                       output,
+                                                                                       mc_ms_feat,
+                                                                                       spatial_shape,
+                                                                                       scale_start_index,
+                                                                                       sample_location,
+                                                                                       weights,
+                                                                                       batch_size,
+                                                                                       num_cams,
+                                                                                       num_feat,
+                                                                                       num_embeds,
+                                                                                       num_scale,
+                                                                                       num_anchors,
+                                                                                       num_pts,
+                                                                                       num_groups,
+                                                                                       FastDivmod(num_embeds),
+                                                                                       FastDivmod(num_scale),
+                                                                                       FastDivmod(num_cams),
+                                                                                       FastDivmod(num_pts),
+                                                                                       FastDivmod(num_anchors),
+                                                                                       FastDivmod(batch_size));
 }
 
 void launch_deformable_aggregation_backward_opt(const float* mc_ms_feat,
@@ -563,32 +589,53 @@ void launch_deformable_aggregation_backward_opt(const float* mc_ms_feat,
                                                 int          num_groups,
                                                 musaStream_t current_stream) {
   const int64_t num_kernels = static_cast<int64_t>(batch_size) * num_pts * num_anchors * num_cams;
-  const int     blocks      = blocks_for(num_kernels);
+  if (num_kernels > static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
+    launch_deformable_aggregation_backward_base(mc_ms_feat,
+                                                spatial_shape,
+                                                scale_start_index,
+                                                sample_location,
+                                                weights,
+                                                grad_output,
+                                                grad_mc_ms_feat,
+                                                grad_sampling_location,
+                                                grad_weights,
+                                                batch_size,
+                                                num_cams,
+                                                num_feat,
+                                                num_embeds,
+                                                num_scale,
+                                                num_anchors,
+                                                num_pts,
+                                                num_groups,
+                                                current_stream);
+    return;
+  }
+  const int64_t blocks = blocks_for(num_kernels);
   if (blocks == 0) return;
-  deformable_aggregation_grad_kernel_opt<<<blocks, kThreads, 0, current_stream>>>(static_cast<int>(num_kernels),
-                                                                                  mc_ms_feat,
-                                                                                  spatial_shape,
-                                                                                  scale_start_index,
-                                                                                  sample_location,
-                                                                                  weights,
-                                                                                  grad_output,
-                                                                                  grad_mc_ms_feat,
-                                                                                  grad_sampling_location,
-                                                                                  grad_weights,
-                                                                                  batch_size,
-                                                                                  num_cams,
-                                                                                  num_feat,
-                                                                                  num_embeds,
-                                                                                  num_scale,
-                                                                                  num_anchors,
-                                                                                  num_pts,
-                                                                                  num_groups,
-                                                                                  FastDivmod(num_embeds),
-                                                                                  FastDivmod(num_scale),
-                                                                                  FastDivmod(num_cams),
-                                                                                  FastDivmod(num_pts),
-                                                                                  FastDivmod(num_anchors),
-                                                                                  FastDivmod(batch_size));
+  deformable_aggregation_grad_kernel_opt<<<grid_dim(blocks), kThreads, 0, current_stream>>>(num_kernels,
+                                                                                            mc_ms_feat,
+                                                                                            spatial_shape,
+                                                                                            scale_start_index,
+                                                                                            sample_location,
+                                                                                            weights,
+                                                                                            grad_output,
+                                                                                            grad_mc_ms_feat,
+                                                                                            grad_sampling_location,
+                                                                                            grad_weights,
+                                                                                            batch_size,
+                                                                                            num_cams,
+                                                                                            num_feat,
+                                                                                            num_embeds,
+                                                                                            num_scale,
+                                                                                            num_anchors,
+                                                                                            num_pts,
+                                                                                            num_groups,
+                                                                                            FastDivmod(num_embeds),
+                                                                                            FastDivmod(num_scale),
+                                                                                            FastDivmod(num_cams),
+                                                                                            FastDivmod(num_pts),
+                                                                                            FastDivmod(num_anchors),
+                                                                                            FastDivmod(batch_size));
 }
 
 }  // namespace

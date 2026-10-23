@@ -24,6 +24,7 @@ RECIPE_DIRECTORIES = {
     "maptrv2": "MapTRv2",
     "openvla": "OpenVLA",
     "qcnet": "QCNet",
+    "qwendrive": "QwenDrive",
     "sparsedrive": "SparseDrive",
     "uniad": "UniAD",
 }

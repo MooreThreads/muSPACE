@@ -64,6 +64,23 @@ def _fixture(
     return value, spatial_shapes, level_start_index, sampling_locations, attention_weights
 
 
+class _NativeCallSpy:
+    """Record the dtype of every tensor handed to a native MSDA entry point."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.calls = []
+
+    def __getattr__(self, name):
+        target = getattr(self._inner, name)
+
+        def recorded(*args, **kwargs):
+            self.calls.append((name, [getattr(arg, "dtype", None) for arg in args]))
+            return target(*args, **kwargs)
+
+        return recorded
+
+
 def test_reference_forward_backward_on_cpu():
     clear_dispatch_report()
     value, spatial_shapes, level_start_index, sampling_locations, attention_weights = _fixture()
@@ -250,7 +267,9 @@ def test_native_musa_matches_reference_forward():
     not hasattr(torch, "musa") or not torch.musa.is_available(), reason="MUSA required"
 )
 def test_native_zero_queries_returns_empty_output_and_zero_gradients():
-    value, spatial_shapes, level_start_index, locations, weights = _fixture(device="musa", queries=0)
+    value, spatial_shapes, level_start_index, locations, weights = _fixture(
+        device="musa", queries=0
+    )
     assert locations.is_contiguous() and weights.is_contiguous()
     output = multi_scale_deformable_attn(
         value, spatial_shapes, level_start_index, locations, weights, backend="musa"
@@ -306,3 +325,157 @@ def test_native_musa_shape_and_dtype_coverage(dtype):
     actual = multi_scale_deformable_attn(*tensors, backend="musa")
     tolerance = 1e-2 if dtype is torch.float16 else 1e-4
     torch.testing.assert_close(actual.cpu(), reference.cpu(), rtol=tolerance, atol=tolerance)
+
+
+@pytest.mark.skipif(
+    not hasattr(torch, "musa") or not torch.musa.is_available(), reason="MUSA required"
+)
+def test_native_bf16_reaches_the_kernel_as_bfloat16(monkeypatch):
+    """The storage dtype must survive to the FFI; the kernel promotes it to fp32."""
+    inner = msda_module._native_extension()
+    assert inner is not None
+    spy = _NativeCallSpy(inner)
+    monkeypatch.setattr(msda_module, "_native_extension", lambda: spy)
+
+    tensors = _fixture(
+        device="musa",
+        dtype=torch.bfloat16,
+        batch=1,
+        queries=4,
+        heads=2,
+        embed_dims=4,
+        levels=((1, 2), (2, 1)),
+        points=2,
+    )
+    output = multi_scale_deformable_attn(*tensors, backend="musa")
+    output.float().sum().backward()
+
+    assert [name for name, _ in spy.calls] == [
+        "ms_deform_attn_forward",
+        "ms_deform_attn_backward",
+    ]
+    forward_dtypes = spy.calls[0][1]
+    assert forward_dtypes[:6] == [
+        torch.bfloat16,
+        torch.int64,
+        torch.int64,
+        torch.bfloat16,
+        torch.bfloat16,
+        torch.bfloat16,
+    ]
+    # grad_col keeps the storage dtype, the gradient accumulators are fp32
+    assert spy.calls[1][1][5:9] == [
+        torch.bfloat16,
+        torch.float32,
+        torch.float32,
+        torch.float32,
+    ]
+
+
+@pytest.mark.skipif(
+    not hasattr(torch, "musa") or not torch.musa.is_available(), reason="MUSA required"
+)
+def test_native_bf16_matches_the_fp32_reference_forward_and_backward():
+    """bfloat16 storage must cost no more than the bfloat16 rounding itself.
+
+    The oracle evaluates the same (already bfloat16 quantised) inputs in fp32, so
+    the residual difference is the bfloat16 rounding of the returned tensors.
+    """
+    clear_dispatch_report()
+    native = _fixture(
+        device="musa",
+        dtype=torch.bfloat16,
+        batch=1,
+        queries=4,
+        heads=2,
+        embed_dims=4,
+        levels=((1, 2), (2, 1)),
+        points=2,
+    )
+    reference = tuple(
+        tensor.detach().float().cpu().requires_grad_(tensor.requires_grad)
+        if tensor.dtype.is_floating_point
+        else tensor.detach().cpu()
+        for tensor in native
+    )
+    expected = multi_scale_deformable_attn(*reference, backend="reference")
+    actual = multi_scale_deformable_attn(*native, backend="musa")
+    assert actual.dtype == torch.bfloat16
+    report = get_last_dispatch_report()
+    assert report is not None
+    assert report.selected_backend == "musa"
+    assert report.native_fallback is False
+
+    grad = torch.linspace(0.1, 1.0, actual.numel(), device="musa").view_as(actual)
+    (actual.float() * grad).sum().backward()
+    (expected * grad.cpu()).sum().backward()
+
+    # one bfloat16 rounding of the forward result and of each returned gradient
+    tolerance = 2e-2
+    torch.testing.assert_close(
+        actual.float().cpu(), expected.detach(), rtol=tolerance, atol=tolerance
+    )
+    for index in (0, 3, 4):
+        torch.testing.assert_close(
+            native[index].grad.float().cpu(),
+            reference[index].grad,
+            rtol=tolerance,
+            atol=tolerance,
+        )
+
+
+@pytest.mark.skipif(
+    not hasattr(torch, "musa") or not torch.musa.is_available(), reason="MUSA required"
+)
+def test_native_bf16_keeps_sampling_geometry_in_fp32():
+    """Sampling geometry must not be rounded to bfloat16.
+
+    The query sits exactly between value pixels 499 and 500, half of which hold
+    4096 and half 0, so the exact answer is 2048.  Evaluating
+    ``w_im = loc * width - 0.5`` in bfloat16 rounds 499.5 up to 500, collapses the
+    interpolation onto pixel 500 and returns 4096 - twice the correct value.
+    """
+    width, step = 1000, 4096.0
+    value = torch.zeros(1, width, 1, 1, dtype=torch.bfloat16, device="musa")
+    value[:, width // 2 :] = step
+    value.requires_grad_(True)
+    spatial_shapes = torch.tensor([[1, width]], dtype=torch.int64, device="musa")
+    level_start_index = torch.zeros(1, dtype=torch.int64, device="musa")
+    locations = torch.full((1, 1, 1, 1, 1, 2), 0.5, dtype=torch.bfloat16, device="musa")
+    locations.requires_grad_(True)
+    weights = torch.ones(1, 1, 1, 1, 1, dtype=torch.bfloat16, device="musa")
+    weights.requires_grad_(True)
+
+    w_im_fp32 = locations[..., 1].float() * width - 0.5
+    w_im_bf16 = ((locations[..., 1].float() * width).to(torch.bfloat16).float() - 0.5).to(
+        torch.bfloat16
+    )
+    assert torch.floor(w_im_fp32).item() == 499.0
+    assert torch.floor(w_im_bf16.float()).item() == 500.0
+
+    expected = multi_scale_deformable_attn(
+        value.float(),
+        spatial_shapes,
+        level_start_index,
+        locations.float(),
+        weights.float(),
+        backend="reference",
+    )
+    actual = multi_scale_deformable_attn(
+        value, spatial_shapes, level_start_index, locations, weights, backend="musa"
+    )
+    torch.testing.assert_close(expected.cpu(), torch.full_like(expected.cpu(), 2048.0))
+    torch.testing.assert_close(actual.float().cpu(), expected.cpu(), rtol=1e-2, atol=1.0)
+
+
+def test_float64_value_is_rejected():
+    value, spatial_shapes, level_start_index, sampling_locations, attention_weights = _fixture()
+    with pytest.raises(TypeError, match="value must be float16, bfloat16 or float32"):
+        multi_scale_deformable_attn(
+            value.double(),
+            spatial_shapes,
+            level_start_index,
+            sampling_locations.double(),
+            attention_weights.double(),
+            backend="reference",
+        )

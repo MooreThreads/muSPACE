@@ -5,9 +5,9 @@ optimized-operator layer for spatial and physical AI and autonomous-driving work
 canonical MUSA operator APIs, thin framework compatibility adapters, and reproducible model
 migration recipes.
 
-The repository provides launch recipes for official BEVFormer, BEVFusion, FlashOcc, OpenVLA, UniAD, QCNet, and
-SparseDrive
-checkouts. muSPACE does not maintain model forks; it prepares official upstream checkouts with
+The repository provides launch recipes for official BEVFormer, BEVFusion, FlashOcc, OpenVLA, UniAD,
+QCNet, SparseDrive, and Qwen-Drive checkouts. muSPACE does not maintain model forks; it prepares
+official upstream checkouts with
 explicit compatibility patches and runtime replacement hooks.
 
 ## Highlights
@@ -21,6 +21,7 @@ explicit compatibility patches and runtime replacement hooks.
 - Runtime patcher that installs the muSPACE DCNv2 layer in mmcv's `CONV_LAYERS` registry
 - FlashOcc BEVPoolV2 launch recipe through `flashocc_patcher.apply()`
 - SparseDrive deformable aggregation through `sparsedrive_patcher.apply()`
+- Qwen-Drive perception head through `qwendrive_patcher.apply()`
 - Dispatch reports for confirming native, reference, and fallback execution
 - Fixture validation and profiling scripts for repeatable correctness and triage runs
 - Batch rotated-3D point-in-box masks for BEVFusion Depth box processing
@@ -32,7 +33,7 @@ explicit compatibility patches and runtime replacement hooks.
 | Python | `>=3.10,<4` (validated: `3.10`) |
 | MUSA SDK / PyTorch / torch_musa | `4.3.8` + `2.7.1` + `2.7.1`, or `5.2.0` + `2.9.1` + `2.9.1`, or `5.2.0` + `2.11.0` + `2.11.0` |
 | Architecture | MTT S5000, `mp_31` |
-| Model recipes | BEVFormer, BEVFusion, FlashOcc, OpenVLA, UniAD, QCNet, SparseDrive |
+| Model recipes | BEVFormer, BEVFusion, FlashOcc, OpenVLA, UniAD, QCNet, SparseDrive, Qwen-Drive |
 
 The AOT native library uses TVM FFI and DLPack rather than the PyTorch C++ ABI, but the supported
 MUSA SDK and PyTorch/torch_musa combinations remain version-bound. Use
@@ -91,8 +92,9 @@ model_examples/BEVFormer/scripts/prepare_checkout.sh ./BEVFormer
 mu-space migrate bevformer --checkout ./BEVFormer
 ```
 
-The same pair works for `flashocc`, `openvla`, `uniad`, and `sparsedrive` with their own recipe directory
-and checkout path. `mu-space restore <model> --checkout <path>` reverses the recipe.
+The same pair works for `flashocc`, `openvla`, `uniad`, `sparsedrive`, and `qwendrive` with their
+own recipe directory and checkout path. `mu-space restore <model> --checkout <path>` reverses the
+recipe.
 
 Build and install the legacy OpenMMLab compatibility stack:
 
@@ -136,9 +138,10 @@ maintaining forks.
 
 | Operator | Canonical API | MUSA native | Reference | Model integration |
 | --- | --- | --- | --- | --- |
-| multi-scale deformable attention | `mu_space.ops.multi_scale_deformable_attn` | available for MUSA tensors | PyTorch reference fallback | BEVFormer and UniAD runtime patcher |
+| multi-scale deformable attention | `mu_space.ops.multi_scale_deformable_attn` | available for MUSA FP32/BF16/FP16 tensors | PyTorch reference fallback | BEVFormer, UniAD, and Qwen-Drive runtime patcher |
 | BEVPoolV2 | `mu_space.ops.bev_pool_v2` | available for MUSA tensors | PyTorch reference fallback | FlashOcc runtime patcher |
 | BEVDepth voxel pooling (train) | `mu_space.ops.voxel_pooling_train` | available for MUSA tensors | PyTorch reference fallback | BEVDepth runtime patcher |
+| Depth-aware voxel pooling | `mu_space.ops.voxel_pool_depth` | FP32/FP16/BF16 forward and backward | PyTorch reference fallback | Qwen-Drive runtime patcher |
 | BEVFusion SparseEncoder spconv | `mu_space.ops.spconv` / legacy `sparse_conv_ext` shim | 3-D SubM/SparseConv FP32/FP16 forward and backward | PyTorch reference implementation | BEVFusion LiDAR SparseEncoder |
 | deformable aggregation | `mu_space.ops.deformable_aggregation` | available for MUSA tensors | PyTorch reference fallback | SparseDrive runtime patcher |
 | modulated deformable conv (DCNv2) | `mu_space.ops.modulated_deform_conv2d` | required, MUSA only | test-only golden model | BEVFormer ResNet-DCN runtime patcher |
@@ -179,6 +182,20 @@ from mu_space.patcher import sparsedrive_patcher
 sparsedrive_patcher.apply()
 ```
 
+For the Qwen-Drive perception head, put the checkout `src` directory on `PYTHONPATH` first.
+`qwendrive_patcher` rebinds multi-scale deformable attention, depth-aware voxel pooling, and the
+view-transform frustum grid:
+
+```python
+from mu_space.patcher import qwendrive_patcher
+
+qwendrive_patcher.apply()
+```
+The SparseDrive recipe ships no checkout patches, so the patcher also covers the extension the
+pinned upstream imports: it registers a placeholder for the unbuilt `deformable_aggregation_ext`
+CUDA extension, which keeps the ops package importable while failing loudly if anything calls the
+extension directly.
+
 Backbones that declare `dcn=dict(type='DCNv2', ...)` — BEVFormer base and small — resolve that
 config entry through mmcv's `CONV_LAYERS` registry, so a second patcher installs the muSPACE
 DCNv2 layer:
@@ -201,17 +218,25 @@ Model-specific validation entrypoints live with each model recipe.
 | --- | --- | --- |
 | BEVFormer | `model_examples/BEVFormer/scripts/validate_fixture.sh --checkout ./BEVFormer` | [BEVFormer guide](model_examples/BEVFormer/README.md), [fixture validation](model_examples/BEVFormer/fixture_validation.md), [fixture profiling](model_examples/BEVFormer/fixture_profiling.md) |
 | BEVFusion | `bash model_examples/BEVFusion/scripts/train_1p_fusion_smoke.sh --checkout ./BEVFusion` | [BEVFusion guide](model_examples/BEVFusion/README.md) |
-
 | FlashOcc | `bash model_examples/FlashOCC/scripts/train_1p_occ_smoke.sh --checkout ./FlashOCC` | [FlashOcc guide](model_examples/FlashOCC/README.md) |
 | UniAD | `bash model_examples/UniAD/scripts/train_1p_stage1_smoke.sh --checkout ./UniAD` | [UniAD guide](model_examples/UniAD/README.md) |
 | OpenVLA | `bash model_examples/OpenVLA/scripts/validate_fixture.sh --checkout ./OpenVLA` | [OpenVLA guide](model_examples/OpenVLA/README.md) |
 | LingBotVA | `bash model_examples/LingBotVA/scripts/validate_fixture.sh --checkout ./LingBotVA` | [LingBotVA guide](model_examples/LingBotVA/README.md), [fixture validation](model_examples/LingBotVA/fixture_validation.md) |
 | QCNet | `bash model_examples/QCNet/scripts/validate_fixture.sh --checkout ./QCNet --data-root <AV2_SUBSET_ROOT>` | [QCNet guide](model_examples/QCNet/README.md), [validation contract](model_examples/QCNet/fixture_validation.md) |
-| SparseDrive | operator-level integration only; no training launch check | [SparseDrive guide](model_examples/SparseDrive/README.md) |
+| SparseDrive | `bash model_examples/SparseDrive/scripts/train_1p_sparsedrive_smoke.sh --checkout ./SparseDrive` | [SparseDrive guide](model_examples/SparseDrive/README.md), [fixture validation](model_examples/SparseDrive/fixture_validation.md) |
+| Qwen-Drive | `python model_examples/QwenDrive/scripts/train_step_musa.py --checkout ./QwenDrive --mode fixture` | [Qwen-Drive guide](model_examples/QwenDrive/README.md), [fixture validation](model_examples/QwenDrive/fixture_validation.md) |
 
 Validation scripts are correctness and integration launch checks, not benchmarks. The FlashOcc and
 UniAD launchers run one training iteration on one scene and print a single `*_train_step_ok` line
-with a finite loss; their timings must not be quoted as performance data.
+with a finite loss; the SparseDrive launcher works the same way and additionally asserts strict
+native `deformable_aggregation` dispatch. The Qwen-Drive launcher runs one frozen-backbone
+perception-head step and prints JSON whose `status` is `qwendrive_perception_train_step_ok`. Their
+timings must not be quoted as performance data.
+
+Operator-level performance data lives in [`benchmarks/`](benchmarks/README.md), which follows the
+normative [operator benchmark standard](docs/benchmarking.md). Each published row names its case,
+scope, dtype, measurement protocol, and reference device, so its numbers can be reproduced and
+compared without reading the runner's source.
 
 ## Dispatch Diagnostics
 
@@ -255,6 +280,8 @@ stable function names from `libmuspace_ops.so` and does not reuse `mmcv._ext`.
 | `model_examples/LingBotVA/` | Pinned LingBot-VA manifest, MUSA patches, smoke and post-training entrypoints, and model guide |
 | `model_examples/QCNet/` | Pinned QCNet manifest, AV2 training smoke, radius integration, and model guide |
 | `model_examples/SparseDrive/` | Pinned SparseDrive manifest, checkout script, and model guide |
+| `model_examples/QwenDrive/` | Pinned Qwen-Drive manifest, runtime patcher, perception-head step, and model guide |
+| `model_examples/SparseDrive/` | Pinned SparseDrive manifest, dataset and launch scripts, and model guide |
 | `docs/` | Cross-model installation, architecture, operator support, provenance, and contributor docs |
 | `tests/` | Unit and integration tests |
 
@@ -278,6 +305,7 @@ workflow. The docs directory keeps focused references for maintainers and advanc
 - [LingBotVA model example](model_examples/LingBotVA/README.md)
 - [QCNet model example](model_examples/QCNet/README.md)
 - [SparseDrive model example](model_examples/SparseDrive/README.md)
+- [Qwen-Drive model example](model_examples/QwenDrive/README.md)
 - [Source provenance](docs/provenance.md)
 
 ## Contributing

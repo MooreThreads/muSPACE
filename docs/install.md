@@ -18,7 +18,8 @@ Model recipes pin one upstream commit each:
 | `bevformer` | `66b65f3a1f58caf0507cb2a971b9c0e7f842376c` |
 | `flashocc` | `449dc7947d6549ccb72a99d6f6d8c02f166ec0dd` |
 | `uniad` | `7b5bf15e0e49522b6553ddc48e67833e8f5f0f52` |
-| `sparsedrive` | `52c4c05b6d446b710c8a12eb9fb19d698b33cb2b` |
+| `sparsedrive` | `fbadea693cbef3f3daea7705e521c0dd3321605c` |
+| `qwendrive` | `28091c1532e869bc7aee91fc0aef6b3e6fd0b2e0` |
 
 PyTorch and torch_musa must use matching versions from the same SDK row. The wheel tag does not
 encode the MUSA device, SDK, Toolkit, or torch_musa version; use the matrix and
@@ -85,9 +86,10 @@ model_examples/BEVFormer/scripts/prepare_checkout.sh ./BEVFormer
 mu-space migrate bevformer --checkout ./BEVFormer
 ```
 
-The same pair works for `flashocc`, `uniad`, and `sparsedrive` with their own recipe directory and
-checkout path. `prepare_checkout.sh` never patches: it exits non-zero when the origin or the
-resulting `HEAD` does not match the manifest, so a stale or wrong checkout fails before migration.
+The same pair works for `flashocc`, `uniad`, `sparsedrive`, and `qwendrive` with their own recipe
+directory and checkout path. `prepare_checkout.sh` never patches: it exits non-zero when the origin
+or the resulting `HEAD` does not match the manifest, so a stale or wrong checkout fails before
+migration.
 `mu-space restore <slug> --checkout <path>` reverses the recipe.
 
 BEVFormer additionally needs the legacy OpenMMLab compatibility wheels. Build them, then install
@@ -122,13 +124,15 @@ from mu_space.patcher import default_patcher
 default_patcher.apply()
 ```
 
-FlashOcc and SparseDrive use their own patchers for their own operators:
+FlashOcc, SparseDrive, and Qwen-Drive use their own patchers for their own operators. Qwen-Drive
+also needs the checkout `src` directory on `PYTHONPATH` before `apply()`:
 
 ```python
-from mu_space.patcher import flashocc_patcher, sparsedrive_patcher
+from mu_space.patcher import flashocc_patcher, qwendrive_patcher, sparsedrive_patcher
 
 flashocc_patcher.apply()
 sparsedrive_patcher.apply()
+qwendrive_patcher.apply()
 ```
 
 Default mode is compatibility-first: MUSA tensors use the native muSPACE operator when available and
@@ -176,3 +180,24 @@ bash model_examples/UniAD/scripts/train_1p_stage1_smoke.sh --checkout ./UniAD
 Each prints a single `*_train_step_ok` line with a finite loss. These are launch checks: they prove
 the path runs end to end and measure nothing. See each model README for dataset layout and the
 limitations of the check.
+
+Qwen-Drive runs one frozen-backbone perception-head step. Fixture mode needs no VLM weights:
+
+```bash
+python model_examples/QwenDrive/scripts/train_step_musa.py \
+  --checkout ./QwenDrive --mode fixture --device musa:0
+```
+
+A passing run prints JSON whose `status` is `qwendrive_perception_train_step_ok`. It is one step,
+not a convergence or throughput result. See `model_examples/QwenDrive/fixture_validation.md`.
+SparseDrive needs its info files and anchors first, then runs the same kind of single-scene launch
+check and additionally asserts strict native dispatch:
+
+```bash
+model_examples/SparseDrive/scripts/prepare_dataset.sh --checkout ./SparseDrive --data-root ./SparseDrive/data/nuscenes
+model_examples/SparseDrive/scripts/prepare_anchors.sh --checkout ./SparseDrive
+model_examples/SparseDrive/scripts/validate_fixture.sh --checkout ./SparseDrive --data-root ./SparseDrive/data/nuscenes
+```
+
+See `model_examples/SparseDrive/fixture_validation.md` for the acceptance criteria and the
+prerequisites, including the `flash_attn` import the pinned model package requires.

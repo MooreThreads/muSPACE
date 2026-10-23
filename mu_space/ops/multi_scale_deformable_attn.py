@@ -117,27 +117,35 @@ class _NativeMSDAFunction(torch.autograd.Function):
         ctx.sampling_dtype = sampling_locations.dtype
         ctx.attention_dtype = attention_weights.dtype
 
-        value_fp32, sampling_fp32, attn_fp32 = _to_contiguous(
-            value.float(), sampling_locations.float(), attention_weights.float()
-        )
-        output = value_fp32.new_empty(
-            (value_fp32.size(0), sampling_fp32.size(1), value_fp32.size(2) * value_fp32.size(3))
+        # bfloat16 is a native storage dtype: the kernel keeps sampling geometry,
+        # attention weights and every accumulator in fp32.  float16 has no native
+        # kernel yet, so it is computed in fp32 and narrowed back on the way out.
+        if value.dtype == torch.bfloat16:
+            value_arg, sampling_arg, attn_arg = _to_contiguous(
+                value, sampling_locations, attention_weights
+            )
+        else:
+            value_arg, sampling_arg, attn_arg = _to_contiguous(
+                value.float(), sampling_locations.float(), attention_weights.float()
+            )
+        output = value_arg.new_empty(
+            (value_arg.size(0), sampling_arg.size(1), value_arg.size(2) * value_arg.size(3))
         )
         ext.ms_deform_attn_forward(
-            value_fp32,
+            value_arg,
             spatial_shapes.contiguous(),
             level_start_index.contiguous(),
-            sampling_fp32,
-            attn_fp32,
+            sampling_arg,
+            attn_arg,
             output,
             im2col_step,
         )
         ctx.save_for_backward(
-            value_fp32,
+            value_arg,
             spatial_shapes.contiguous(),
             level_start_index.contiguous(),
-            sampling_fp32,
-            attn_fp32,
+            sampling_arg,
+            attn_arg,
         )
         return output.to(dtype=ctx.value_dtype)
 
@@ -149,16 +157,24 @@ class _NativeMSDAFunction(torch.autograd.Function):
         value, spatial_shapes, level_start_index, sampling_locations, attention_weights = (
             ctx.saved_tensors
         )
-        grad_value = torch.zeros_like(value)
-        grad_sampling = torch.zeros_like(sampling_locations)
-        grad_attention = torch.zeros_like(attention_weights)
+        if value.dtype == torch.bfloat16:
+            # the native bfloat16 backward accumulates gradients in fp32
+            grad_value = torch.zeros_like(value, dtype=torch.float32)
+            grad_sampling = torch.zeros_like(sampling_locations, dtype=torch.float32)
+            grad_attention = torch.zeros_like(attention_weights, dtype=torch.float32)
+            grad_output = grad_output.contiguous()
+        else:
+            grad_value = torch.zeros_like(value)
+            grad_sampling = torch.zeros_like(sampling_locations)
+            grad_attention = torch.zeros_like(attention_weights)
+            grad_output = grad_output.float().contiguous()
         ext.ms_deform_attn_backward(
             value,
             spatial_shapes,
             level_start_index,
             sampling_locations,
             attention_weights,
-            grad_output.float().contiguous(),
+            grad_output,
             grad_value,
             grad_sampling,
             grad_attention,
@@ -185,8 +201,8 @@ def _normalize_inputs(
         raise TypeError("spatial_shapes must be int64")
     if level_start_index.dtype != torch.int64:
         raise TypeError("level_start_index must be int64")
-    if value.dtype not in {torch.float16, torch.float32}:
-        raise TypeError("value must be float16 or float32")
+    if value.dtype not in {torch.float16, torch.bfloat16, torch.float32}:
+        raise TypeError("value must be float16, bfloat16 or float32")
     if sampling_locations.dtype != value.dtype:
         sampling_locations = sampling_locations.to(dtype=value.dtype)
     if attention_weights.dtype != value.dtype:

@@ -83,4 +83,6 @@ Before submitting an operator, update:
 - `docs/operator_matrix.md` with native/reference/model support;
 - `docs/provenance.md` when code is adapted from upstream projects;
 - `README.md` only when the operator is part of the public support surface;
-- model example docs when a model workflow depends on the operator.
+- model example docs when a model workflow depends on the operator;
+- the operator benchmark under `benchmarks/` when performance is published, following the
+  [benchmark standard](benchmarking.md).

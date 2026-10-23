@@ -1,0 +1,11 @@
+# Perception-side packages the published head imports, beyond the supported
+# muSPACE PyTorch and torch_musa stack. Do not install the upstream CUDA pins
+# (torch 2.8.0, flash-attn, flash-linear-attention, causal-conv1d): they target
+# CUDA 12.8 and would replace the MUSA stack. The frozen VLM forward has its own
+# dependency set; install that from the pinned checkout's requirements only
+# after confirming it does not downgrade torch or torch_musa.
+transformers
+accelerate
+safetensors
+numpy
+pillow

@@ -1,0 +1,21 @@
+name: QwenDrive
+repository: https://github.com/QwenLM/Qwen-Drive-1.0.git
+reference_branch: main
+reference_commit: 28091c1532e869bc7aee91fc0aef6b3e6fd0b2e0
+default_checkout: QwenDrive
+integration:
+  maintains_fork: false
+  # The perception head calls two custom operators. The patcher rebinds both,
+  # plus the view-transform frustum grid that the published code builds on CUDA.
+  operators:
+    - multi_scale_deformable_attn
+    - voxel_pool_depth
+  runtime_patcher: mu_space.patcher.qwendrive_patcher
+  training_entrypoint: model_examples/QwenDrive/scripts/train_step_musa.py
+  strict_backend: musa
+patch_marker: .mu_space_qwendrive.json
+# The recipe ships no checkout patches. Qwen-Drive is integrated at runtime by
+# mu_space.patcher.qwendrive_patcher, which rebinds the perception package
+# without editing the checkout. The pin matches the operator lineage in
+# docs/provenance.md.
+patches: []

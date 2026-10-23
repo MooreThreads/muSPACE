@@ -1,7 +1,7 @@
 name: SparseDrive
 repository: https://github.com/swc-17/SparseDrive.git
 reference_branch: main
-reference_commit: 52c4c05b6d446b710c8a12eb9fb19d698b33cb2b
+reference_commit: fbadea693cbef3f3daea7705e521c0dd3321605c
 default_checkout: SparseDrive
 integration:
   maintains_fork: false
@@ -11,7 +11,9 @@ integration:
 patch_marker: .mu_space_sparsedrive.json
 # The recipe ships no checkout patches. SparseDrive is integrated at runtime by
 # mu_space.patcher.sparsedrive_patcher, which rebinds the upstream
-# deformable_aggregation binding without editing the checkout. The pinned commit
-# is a candidate that has not been verified against the operator lineage in
-# docs/provenance.md; see README.md for the open gap.
+# deformable_aggregation binding without editing the checkout. The pinned commit's
+# baseline kernels are verified token-identical to the operator lineage recorded in
+# docs/provenance.md. The patcher also tolerates the upstream
+# deformable_aggregation_ext CUDA extension being absent, because this recipe never
+# builds it.
 patches: []

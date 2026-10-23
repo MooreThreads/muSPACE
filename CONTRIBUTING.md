@@ -39,7 +39,9 @@ bash model_examples/UniAD/scripts/train_1p_stage1_smoke.sh --checkout ./UniAD
 
 The FlashOcc and UniAD launchers run one training iteration on one scene and prove only that the
 path launches. Their timings, and profiling script output, must not be presented as release
-benchmark results.
+benchmark results. Published operator benchmarks follow the
+[operator benchmark standard](docs/benchmarking.md), which also defines what benchmark files may
+contain.
 
 ## Style
 

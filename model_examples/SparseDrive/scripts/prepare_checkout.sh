@@ -2,7 +2,7 @@
 set -euo pipefail
 
 readonly REPOSITORY="https://github.com/swc-17/SparseDrive.git"
-readonly COMMIT="52c4c05b6d446b710c8a12eb9fb19d698b33cb2b"
+readonly COMMIT="fbadea693cbef3f3daea7705e521c0dd3321605c"
 readonly DESTINATION="${1:-SparseDrive}"
 
 if [[ ! -d "${DESTINATION}/.git" ]]; then

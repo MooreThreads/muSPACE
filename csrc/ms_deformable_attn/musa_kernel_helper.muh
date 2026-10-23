@@ -2,6 +2,7 @@
 #define MUSPACE_MUSA_KERNEL_HELPER_MUH_
 
 #include <musa.h>
+#include <musa_bf16.h>
 #include <musa_fp16.h>
 
 #define MUSPACE_MUSA_1D_KERNEL_LOOP(i, n) \
@@ -9,7 +10,15 @@
 
 #define MUSA_1D_KERNEL_LOOP MUSPACE_MUSA_1D_KERNEL_LOOP
 
-using phalf = half;
+using phalf  = half;
+using bf16_t = __mt_bfloat16;
+
+// MSDA evaluates sampling geometry, bilinear weights and the weighted sum in
+// this type.  bfloat16 only stores the data; every arithmetic step that decides
+// *where* a value is sampled and *how* the four corners are combined runs in
+// fp32.  Kernels and the FFI launchers take it as a defaulted second template
+// parameter, so the fp32 instantiation resolves it back to float.
+using ms_deform_attn_acc_t = float;
 
 #define __PHALF(x) (x)
 

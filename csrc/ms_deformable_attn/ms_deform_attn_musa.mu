@@ -32,6 +32,16 @@ constexpr int kMsDeformAttnWarpSize                = 32;
 inline int GetMsDeformAttnBlocks(const int n, const int num_threads) {
   return (n + num_threads - 1) / num_threads;
 }
+
+// bfloat16 is a storage dtype only: the kernels evaluate sampling geometry,
+// the bilinear weights, the forward accumulator and the gradient accumulators
+// in ms_deform_attn_acc_t (fp32).
+inline DLDataType ms_deform_attn_data_dtype(const ffi::TensorView &value) {
+  const DLDataType dtype = value.dtype();
+  TVM_FFI_ICHECK(same_dtype(dtype, kDLFloat32) || same_dtype(dtype, kDLBFloat16))
+      << "value must be float32 or bfloat16";
+  return dtype;
+}
 }  // namespace
 
 template <typename scalar_t>
@@ -101,7 +111,7 @@ void ms_deformable_im2col_musa(musaStream_t    stream,
   check_last_error("ms_deformable_im2col_musa");
 }
 
-template <typename scalar_t>
+template <typename scalar_t, typename acc_t = ms_deform_attn_acc_t>
 void ms_deformable_col2im_musa(musaStream_t    stream,
                                const scalar_t *grad_col,
                                const scalar_t *data_value,
@@ -116,9 +126,9 @@ void ms_deformable_col2im_musa(musaStream_t    stream,
                                const int       num_levels,
                                const int       num_query,
                                const int       num_point,
-                               scalar_t       *grad_value,
-                               scalar_t       *grad_sampling_loc,
-                               scalar_t       *grad_attn_weight) {
+                               acc_t          *grad_value,
+                               acc_t          *grad_sampling_loc,
+                               acc_t          *grad_attn_weight) {
   const int num_threads        = (channels > kMsDeformAttnNumThreads) ? kMsDeformAttnNumThreads : channels;
   const int num_kernels        = batch_size * num_query * num_heads * channels;
   const int num_actual_kernels = batch_size * num_query * num_heads * channels;
@@ -127,7 +137,7 @@ void ms_deformable_col2im_musa(musaStream_t    stream,
       ms_deformable_col2im_gpu_kernel_shm_reduce_v2_multi_blocks<scalar_t>
           <<<GetMsDeformAttnBlocks(num_actual_kernels, num_threads),
              num_threads,
-             num_threads * 3 * sizeof(scalar_t),
+             num_threads * 3 * sizeof(acc_t),
              stream>>>(num_kernels,
                        grad_col,
                        data_value,
@@ -396,7 +406,7 @@ void ms_deformable_col2im_musa(musaStream_t    stream,
           ms_deformable_col2im_gpu_kernel_shm_reduce_v1<scalar_t>
               <<<GetMsDeformAttnBlocks(num_actual_kernels, num_threads),
                  num_threads,
-                 num_threads * 3 * sizeof(scalar_t),
+                 num_threads * 3 * sizeof(acc_t),
                  stream>>>(num_kernels,
                            grad_col,
                            data_value,
@@ -418,7 +428,7 @@ void ms_deformable_col2im_musa(musaStream_t    stream,
           ms_deformable_col2im_gpu_kernel_shm_reduce_v2<scalar_t>
               <<<GetMsDeformAttnBlocks(num_actual_kernels, num_threads),
                  num_threads,
-                 num_threads * 3 * sizeof(scalar_t),
+                 num_threads * 3 * sizeof(acc_t),
                  stream>>>(num_kernels,
                            grad_col,
                            data_value,
@@ -501,33 +511,52 @@ void ms_deform_attn_forward(ffi::TensorView value,
                             ffi::TensorView weight,
                             ffi::TensorView out,
                             int             im2col_step) {
-  check_musa_contiguous(value, "value", kDLFloat32);
+  const DLDataType data_dtype = ms_deform_attn_data_dtype(value);
+  check_musa_contiguous(value, "value", data_dtype);
   check_musa_contiguous(spatial, "spatial_shapes", kDLInt64);
   check_musa_contiguous(start, "level_start_index", kDLInt64);
-  check_musa_contiguous(loc, "sampling_locations", kDLFloat32);
-  check_musa_contiguous(weight, "attention_weights", kDLFloat32);
-  check_musa_contiguous(out, "out", kDLFloat32);
+  check_musa_contiguous(loc, "sampling_locations", data_dtype);
+  check_musa_contiguous(weight, "attention_weights", data_dtype);
+  check_musa_contiguous(out, "out", data_dtype);
   const int batch = dim(value, 0), spatial_size = dim(value, 1), heads = dim(value, 2), channels = dim(value, 3),
             levels = dim(spatial, 0), queries = dim(loc, 1), points = dim(loc, 4), step = std::min(batch, im2col_step);
   TVM_FFI_ICHECK_GT(step, 0);
   TVM_FFI_ICHECK_EQ(batch % step, 0);
   const int64_t vs = spatial_size * heads * channels, ls = queries * heads * levels * points * 2,
                 ws = queries * heads * levels * points, os = queries * heads * channels;
-  for (int n = 0; n < batch / step; ++n)
-    ms_deformable_im2col_musa(stream(value),
-                              (float *)value.data_ptr() + n * step * vs,
-                              (int64_t *)spatial.data_ptr(),
-                              (int64_t *)start.data_ptr(),
-                              (float *)loc.data_ptr() + n * step * ls,
-                              (float *)weight.data_ptr() + n * step * ws,
-                              step,
-                              spatial_size,
-                              heads,
-                              channels,
-                              levels,
-                              queries,
-                              points,
-                              (float *)out.data_ptr() + n * step * os);
+  for (int n = 0; n < batch / step; ++n) {
+    if (same_dtype(data_dtype, kDLBFloat16)) {
+      ms_deformable_im2col_musa<bf16_t>(stream(value),
+                                        static_cast<const bf16_t *>(value.data_ptr()) + n * step * vs,
+                                        static_cast<const int64_t *>(spatial.data_ptr()),
+                                        static_cast<const int64_t *>(start.data_ptr()),
+                                        static_cast<const bf16_t *>(loc.data_ptr()) + n * step * ls,
+                                        static_cast<const bf16_t *>(weight.data_ptr()) + n * step * ws,
+                                        step,
+                                        spatial_size,
+                                        heads,
+                                        channels,
+                                        levels,
+                                        queries,
+                                        points,
+                                        static_cast<bf16_t *>(out.data_ptr()) + n * step * os);
+    } else {
+      ms_deformable_im2col_musa(stream(value),
+                                (float *)value.data_ptr() + n * step * vs,
+                                (int64_t *)spatial.data_ptr(),
+                                (int64_t *)start.data_ptr(),
+                                (float *)loc.data_ptr() + n * step * ls,
+                                (float *)weight.data_ptr() + n * step * ws,
+                                step,
+                                spatial_size,
+                                heads,
+                                channels,
+                                levels,
+                                queries,
+                                points,
+                                (float *)out.data_ptr() + n * step * os);
+    }
+  }
 }
 void ms_deform_attn_backward(ffi::TensorView value,
                              ffi::TensorView spatial,
@@ -539,30 +568,61 @@ void ms_deform_attn_backward(ffi::TensorView value,
                              ffi::TensorView gl,
                              ffi::TensorView gw,
                              int             im2col_step) {
+  const DLDataType data_dtype = ms_deform_attn_data_dtype(value);
+  check_musa_contiguous(value, "value", data_dtype);
+  check_musa_contiguous(spatial, "spatial_shapes", kDLInt64);
+  check_musa_contiguous(start, "level_start_index", kDLInt64);
+  check_musa_contiguous(loc, "sampling_locations", data_dtype);
+  check_musa_contiguous(weight, "attention_weights", data_dtype);
+  check_musa_contiguous(grad, "grad", data_dtype);
+  check_musa_contiguous(gv, "grad_value", kDLFloat32);
+  check_musa_contiguous(gl, "grad_sampling_locations", kDLFloat32);
+  check_musa_contiguous(gw, "grad_attention_weights", kDLFloat32);
   const int batch = dim(value, 0), spatial_size = dim(value, 1), heads = dim(value, 2), channels = dim(value, 3),
             levels = dim(spatial, 0), queries = dim(loc, 1), points = dim(loc, 4), step = std::min(batch, im2col_step);
   TVM_FFI_ICHECK_GT(step, 0);
   TVM_FFI_ICHECK_EQ(batch % step, 0);
   const int64_t vs = spatial_size * heads * channels, ls = queries * heads * levels * points * 2,
                 ws = queries * heads * levels * points, os = queries * heads * channels;
-  for (int n = 0; n < batch / step; ++n)
-    ms_deformable_col2im_musa(stream(value),
-                              (float *)grad.data_ptr() + n * step * os,
-                              (float *)value.data_ptr() + n * step * vs,
-                              (int64_t *)spatial.data_ptr(),
-                              (int64_t *)start.data_ptr(),
-                              (float *)loc.data_ptr() + n * step * ls,
-                              (float *)weight.data_ptr() + n * step * ws,
-                              step,
-                              spatial_size,
-                              heads,
-                              channels,
-                              levels,
-                              queries,
-                              points,
-                              (float *)gv.data_ptr() + n * step * vs,
-                              (float *)gl.data_ptr() + n * step * ls,
-                              (float *)gw.data_ptr() + n * step * ws);
+  for (int n = 0; n < batch / step; ++n) {
+    if (same_dtype(data_dtype, kDLBFloat16)) {
+      ms_deformable_col2im_musa<bf16_t>(stream(value),
+                                        static_cast<const bf16_t *>(grad.data_ptr()) + n * step * os,
+                                        static_cast<const bf16_t *>(value.data_ptr()) + n * step * vs,
+                                        static_cast<const int64_t *>(spatial.data_ptr()),
+                                        static_cast<const int64_t *>(start.data_ptr()),
+                                        static_cast<const bf16_t *>(loc.data_ptr()) + n * step * ls,
+                                        static_cast<const bf16_t *>(weight.data_ptr()) + n * step * ws,
+                                        step,
+                                        spatial_size,
+                                        heads,
+                                        channels,
+                                        levels,
+                                        queries,
+                                        points,
+                                        (float *)gv.data_ptr() + n * step * vs,
+                                        (float *)gl.data_ptr() + n * step * ls,
+                                        (float *)gw.data_ptr() + n * step * ws);
+    } else {
+      ms_deformable_col2im_musa(stream(value),
+                                (float *)grad.data_ptr() + n * step * os,
+                                (float *)value.data_ptr() + n * step * vs,
+                                (int64_t *)spatial.data_ptr(),
+                                (int64_t *)start.data_ptr(),
+                                (float *)loc.data_ptr() + n * step * ls,
+                                (float *)weight.data_ptr() + n * step * ws,
+                                step,
+                                spatial_size,
+                                heads,
+                                channels,
+                                levels,
+                                queries,
+                                points,
+                                (float *)gv.data_ptr() + n * step * vs,
+                                (float *)gl.data_ptr() + n * step * ls,
+                                (float *)gw.data_ptr() + n * step * ws);
+    }
+  }
 }
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(ms_deform_attn_forward, ms_deform_attn_forward);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(ms_deform_attn_backward, ms_deform_attn_backward);

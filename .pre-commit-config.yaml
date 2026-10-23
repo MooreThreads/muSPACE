@@ -30,3 +30,14 @@ repos:
       - id: ruff-check
       - id: ruff-format
         types_or: [python, pyi]
+
+  - repo: local
+    hooks:
+      # Published benchmark rows are a contract: shape, protocol, reference platform and
+      # privacy rules are checked here, before a row can be committed.
+      - id: benchmark-standard
+        name: benchmark standard
+        entry: python benchmarks/check_benchmarks.py --check
+        language: system
+        pass_filenames: false
+        files: '^(benchmarks/|docs/benchmarking\.md$|docs/operator_matrix\.md$)'

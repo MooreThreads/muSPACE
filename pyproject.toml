@@ -113,6 +113,7 @@ include = ["mu_space*"]
 ]
 "share/mu-space/model_examples/SparseDrive" = [
     "model_examples/SparseDrive/manifest.yaml",
+    "model_examples/SparseDrive/requirements.lock",
 ]
 "share/mu-space/model_examples/OpenVLA" = [
     "model_examples/OpenVLA/manifest.yaml",
@@ -124,6 +125,10 @@ include = ["mu_space*"]
 "share/mu-space/model_examples/QCNet" = [
     "model_examples/QCNet/manifest.yaml",
     "model_examples/QCNet/requirements.lock",
+]
+"share/mu-space/model_examples/QwenDrive" = [
+    "model_examples/QwenDrive/manifest.yaml",
+    "model_examples/QwenDrive/requirements.lock",
 ]
 "share/mu-space/model_examples/QCNet/patches" = [
     "model_examples/QCNet/patches/qcnet-01-musa-radius.patch",

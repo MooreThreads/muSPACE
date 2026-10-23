@@ -1,7 +1,8 @@
 """Deformable aggregation canonical API with MUSA native and PyTorch reference backends.
 
-Adapted from SparseDrive's multi-camera multi-scale deformable feature aggregation
-(production path: optimized forward/backward; formerly SparseDrive forward_v1 / backward_v3).
+Adapted from SparseDrive's multi-camera multi-scale deformable feature aggregation. The native
+path calls the optimized `*_opt` forward and backward kernels; `docs/provenance.md` records the
+lineage of the baseline and optimized pairs.
 """
 
 from __future__ import annotations

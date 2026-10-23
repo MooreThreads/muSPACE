@@ -61,9 +61,10 @@ integration metadata, marker filename, and the ordered patch list with a `sha256
 | BEVFormer | `bevformer` | `66b65f3a1f58caf0507cb2a971b9c0e7f842376c` | `.mu_space_bevformer.json` | `default_patcher` |
 | FlashOcc | `flashocc` | `449dc7947d6549ccb72a99d6f6d8c02f166ec0dd` | `.mu_space_flashocc.json` | `flashocc_patcher` |
 | UniAD | `uniad` | `7b5bf15e0e49522b6553ddc48e67833e8f5f0f52` | `.mu_space_uniad.json` | `default_patcher` |
-| SparseDrive | `sparsedrive` | `52c4c05b6d446b710c8a12eb9fb19d698b33cb2b` | `.mu_space_sparsedrive.json` | `sparsedrive_patcher` |
+| SparseDrive | `sparsedrive` | `fbadea693cbef3f3daea7705e521c0dd3321605c` | `.mu_space_sparsedrive.json` | `sparsedrive_patcher` |
+| Qwen-Drive | `qwendrive` | `28091c1532e869bc7aee91fc0aef6b3e6fd0b2e0` | `.mu_space_qwendrive.json` | `qwendrive_patcher` |
 
-The normal flow is identical for all four, with `<Model>` and `<slug>` substituted:
+The normal flow is identical for each of them, with `<Model>` and `<slug>` substituted:
 
 1. `model_examples/<Model>/scripts/prepare_checkout.sh ./<Model>` fetches and verifies the pinned
    upstream commit. It only fetches; it never patches, and it exits non-zero when the origin or the
@@ -88,8 +89,11 @@ than in code:
 - BEVFormer carries a separate `dependency_patches:` key for the legacy mmcv/mmdet3d sdist patches.
   Those are applied with `patch -p1` by `build_openmmlab_compat_wheels.sh` against extracted
   source distributions, not to the model checkout, so `mu-space migrate` never sees them.
-- SparseDrive ships an empty `patches:` list. Its integration is runtime-only, so migration writes
-  a marker without modifying the checkout.
+- SparseDrive and Qwen-Drive ship an empty `patches:` list. Their integration is runtime-only,
+  so migration writes a marker without modifying the checkout. SparseDrive's patcher additionally
+  covers the pinned checkout's unbuilt `deformable_aggregation_ext` CUDA extension: it registers a
+  placeholder so the upstream ops package imports without the operator build, and raises only if
+  something calls the extension directly. Any other import failure still surfaces unchanged.
 
 Patch files are byte-exact inputs to `git apply`. Whitespace normalization silently breaks context
 matching, so `.pre-commit-config.yaml` excludes `*.patch` from the whitespace-fixing hooks.
@@ -126,6 +130,8 @@ muSPACE uses layered validation:
   optimizer progress, and loss structure.
 - FlashOcc and UniAD launch checks run one training iteration on one scene and print a single
   `*_train_step_ok` line with a finite loss. They prove the path launches; they measure nothing.
+- The Qwen-Drive check runs one frozen-backbone perception-head step and prints JSON whose `status`
+  is `qwendrive_perception_train_step_ok`. It is not a benchmark.
 - Fixture profiling records timing, peak memory, dispatch logs, and optional forward traces for
   triage. It is not a release benchmark.
 

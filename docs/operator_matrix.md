@@ -1,29 +1,74 @@
 # Operator matrix
 
-| Operator | Canonical API | MUSA native | Reference | Model integration |
-|---|---:|---:|---:|---|
-| multi-scale deformable attention | `mu_space.ops.multi_scale_deformable_attn` | available for MUSA tensors | PyTorch reference fallback | BEVFormer and UniAD through `default_patcher` |
-| BEVPool | `mu_space.ops.bev_pool` | available for MUSA tensors | PyTorch reference fallback | BEVFusion runtime patcher |
-| BEVDepth voxel pooling (train) | `mu_space.ops.voxel_pooling_train` | available for MUSA tensors | PyTorch reference fallback | BEVDepth runtime patcher |
-| BEVPoolV2 | `mu_space.ops.bev_pool_v2` | available for MUSA tensors | PyTorch reference fallback | FlashOcc through `flashocc_patcher` |
-| deformable aggregation | `mu_space.ops.deformable_aggregation` | available for MUSA tensors | PyTorch reference fallback | SparseDrive runtime patcher |
-| modulated deformable conv (DCNv2) | `mu_space.ops.modulated_deform_conv2d` | required, MUSA only | test-only golden model | BEVFormer ResNet-DCN runtime patcher |
-| standard deformable conv (DCN) | `mu_space.ops.DeformConv2d` / `DeformConv2dPack` | required, MUSA native via mask=1 | mmcv-compatible reference surface | BEVDepth `DCN` registry patcher |
-| FlashBEV pooling | `mu_space.ops.flash_bevpool` | available for MUSA tensors | PyTorch reference fallback | standalone operator API |
-| FlashSCA pooling | `mu_space.ops.flash_bevpool_sca` | available for MUSA tensors | PyTorch reference fallback | standalone operator API |
-| sigmoid focal loss | `mu_space.ops.sigmoid_focal_loss` | available for MUSA tensors | PyTorch BCE-with-logits reference fallback | BEVFusion source patch recipe |
-| BEVFusion SparseEncoder spconv | `mu_space.ops.spconv` / legacy `sparse_conv_ext` shim | 3-D SubM/SparseConv FP32/FP16 forward and backward | PyTorch reference implementation | BEVFusion LiDAR SparseEncoder |
-| BEVFusion BEV IoU/NMS | `mu_space.ops.boxes_iou_bev`, `nms_bev`, `nms_bev_normal` | available for MUSA tensors | independent polygon/NMS reference | source patch or BEVFusion iou3d patcher |
-| Hard voxelize | `mu_space.ops.hard_voxelize` / `Voxelization` | available for MUSA tensors | PyTorch reference fallback | mmdet3d/BEVFusion compatibility patch |
-| points in rotated 3-D boxes | `mu_space.ops.points_in_boxes_all` | available for MUSA tensors | PyTorch reference fallback | BEVFusion Depth batch point-in-box path |
-| radius neighborhood query | `mu_space.ops.radius`, `radius_graph` | FP32, D < 9, sorted non-negative batches, int32 indexing range | `radius_reference`, `radius_graph_reference` | standalone operator API |
-| QCNet radius integration | `mu_space.qcnet_compat` | native on MUSA tensors | upstream torch-cluster on CUDA/CPU | QCNet recipe |
+| Operator | Canonical API | MUSA native | Reference | Model integration | Benchmark |
+|---|---:|---:|---:|---:|---|
+| multi-scale deformable attention | `mu_space.ops.multi_scale_deformable_attn` | available for MUSA FP32/BF16/FP16 tensors | PyTorch reference fallback | BEVFormer and UniAD through `default_patcher`; Qwen-Drive through `qwendrive_patcher` | [msda](../benchmarks/msda/README.md) |
+| BEVPool | `mu_space.ops.bev_pool` | available for MUSA tensors | PyTorch reference fallback | BEVFusion runtime patcher | [bev_pool](../benchmarks/bev_pool/README.md) |
+| BEVDepth voxel pooling (train) | `mu_space.ops.voxel_pooling_train` | available for MUSA tensors | PyTorch reference fallback | BEVDepth runtime patcher | [voxel_pooling_train](../benchmarks/voxel_pooling_train/README.md) |
+| Depth-aware voxel pooling | `mu_space.ops.voxel_pool_depth` | FP32/FP16/BF16 forward and backward for MUSA tensors | PyTorch reference fallback | Qwen-Drive through `qwendrive_patcher` | [voxel_pool_depth](../benchmarks/voxel_pool_depth/README.md) |
+| BEVPoolV2 | `mu_space.ops.bev_pool_v2` | available for MUSA tensors | PyTorch reference fallback | FlashOcc through `flashocc_patcher` | [bev_pool_v2](../benchmarks/bev_pool_v2/README.md) |
+| deformable aggregation | `mu_space.ops.deformable_aggregation` | available for MUSA tensors | PyTorch reference fallback | SparseDrive runtime patcher | [deformable_aggregation](../benchmarks/deformable_aggregation/README.md) |
+| modulated deformable conv (DCNv2) | `mu_space.ops.modulated_deform_conv2d` | required, MUSA only | test-only golden model | BEVFormer ResNet-DCN runtime patcher | [dcnv2](../benchmarks/dcnv2/README.md) |
+| standard deformable conv (DCN) | `mu_space.ops.DeformConv2d` / `DeformConv2dPack` | required, MUSA native via mask=1 | mmcv-compatible reference surface | BEVDepth `DCN` registry patcher | [deform_conv](../benchmarks/deform_conv/README.md) |
+| FlashBEV pooling | `mu_space.ops.flash_bevpool` | available for MUSA tensors | PyTorch reference fallback | standalone operator API | [flashbev](../benchmarks/flashbev/README.md) |
+| FlashSCA pooling | `mu_space.ops.flash_bevpool_sca` | available for MUSA tensors | PyTorch reference fallback | standalone operator API | [flashbev](../benchmarks/flashbev/README.md) |
+| sigmoid focal loss | `mu_space.ops.sigmoid_focal_loss` | available for MUSA tensors | PyTorch BCE-with-logits reference fallback | BEVFusion source patch recipe | [sigmoid_focal_loss](../benchmarks/sigmoid_focal_loss/README.md) |
+| BEVFusion SparseEncoder spconv | `mu_space.ops.spconv` / legacy `sparse_conv_ext` shim | 3-D SubM/SparseConv FP32/FP16 forward and backward | PyTorch reference implementation | BEVFusion LiDAR SparseEncoder | [spconv](../benchmarks/spconv/README.md) |
+| BEVFusion BEV IoU/NMS | `mu_space.ops.boxes_iou_bev`, `nms_bev`, `nms_bev_normal` | available for MUSA tensors | independent polygon/NMS reference | source patch or BEVFusion iou3d patcher | [boxes_iou_bev](../benchmarks/boxes_iou_bev/README.md) |
+| Hard voxelize | `mu_space.ops.hard_voxelize` / `Voxelization` | available for MUSA tensors | PyTorch reference fallback | mmdet3d/BEVFusion compatibility patch | [hard_voxelize](../benchmarks/hard_voxelize/README.md) |
+| points in rotated 3-D boxes | `mu_space.ops.points_in_boxes_all` | available for MUSA tensors | PyTorch reference fallback | BEVFusion Depth batch point-in-box path | [points_in_boxes_all](../benchmarks/points_in_boxes_all/README.md) |
+| radius neighborhood query | `mu_space.ops.radius`, `radius_graph` | FP32, D < 9, sorted non-negative batches, int32 indexing range | upstream torch-cluster, with `radius_reference`, `radius_graph_reference` as the local fallback | standalone operator API | [radius](../benchmarks/radius/README.md) |
+| QCNet radius integration | `mu_space.qcnet_compat` | native on MUSA tensors | upstream torch-cluster on CUDA/CPU | QCNet recipe | [radius](../benchmarks/radius/README.md) |
+| CenterPoint target assignment | `mu_space.ops.centerpoint_target_assign` | available for MUSA tensors | host-side NumPy loop upstream, no device reference | BEVFusion CenterPoint head training path | [centerpoint_target_assign](../benchmarks/centerpoint_target_assign/README.md) |
+
+The `Benchmark` column links to the published benchmark record for each operator. Measured rows
+follow the [operator benchmark standard](benchmarking.md).
 
 Hard voxelize accepts FP32 points `[N, F]` and emits voxel coordinates in OpenMMLab
 `[z, y, x]` order. The default deterministic path preserves first-seen order; the
 parallel `deterministic=False` path does not guarantee voxel order. On rare FP32
 voxel-boundary inputs, MUSA division rounding can place a point in a neighboring bin
 compared with CUDA.
+
+## Multi-scale deformable attention
+
+`multi_scale_deformable_attn` accepts FP32, BF16 and FP16 MUSA tensors; `sampling_locations`
+and `attention_weights` follow the `value` dtype. BF16 is a native storage dtype: the kernel
+evaluates the sampling geometry, the bilinear weights and every accumulator in FP32, and only
+narrows the forward result and the returned gradients back to BF16. Gradients always accumulate
+in FP32, so a native BF16 backward allocates FP32 gradient buffers and casts them to the input
+dtypes before returning. FP16 has no native kernel and is computed through the FP32 path.
+
+Sampling geometry is never evaluated in the storage dtype, so BF16 keeps the FP32 sub-pixel
+resolution of `sampling_locations`: `tests/ops/test_multi_scale_deformable_attn.py` pins this
+with a query placed exactly between two value pixels, where a BF16 geometry would sample the
+neighbouring pixel and double the result.
+
+Measured BF16 alignment: against the PyTorch reference evaluated in FP32, the native forward and
+backward stay within 3.1e-3 of the peak magnitude at the published MSDA shape (2,40000,8,32),
+and the FP32 control stays within 5e-7. Evaluating that reference in BF16 instead drifts by up
+to 1.7 there, because it builds its sampling grid in the storage dtype.
+
+## Depth-aware voxel pooling
+
+`voxel_pool_depth` follows the Qwen-Drive-1.0 view-transform contract:
+`img_feats [B, N_sweep * N_cam, C, H, W]`, `img_depth [B * N_sweep * N_cam, D, H, W]`,
+`voxel_coords [B, N_sweep, N_cam, D, H, W, 4]`, `mask` over the frustum cells, and output
+`[B, N_cam, X, Y, Z, C]`. The Python layer compacts the masked cells, ranks them by output voxel
+and derives the sorted intervals; the native kernels unpack the linear frustum index, weighted-sum
+the depth probability against the image features, and back-propagate to both inputs.
+
+Environment override:
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `MUSPACE_VOXEL_POOL_DEPTH_LAUNCH` | `auto` | Launch variant. `auto` uses the packed kernel when `C % 4 == 0` and the output is 16-byte aligned, otherwise the linear kernel. `linear`, `2d` and `packed` force one variant. The `2d` variant is an experimental mapping that is slower on every measured shape. |
+| `MUSPACE_VOXEL_POOL_DEPTH_DEPTH_WARP` | `1` | Backward depth-gradient reduction. `1` spreads the channels over a warp and reduces with a shuffle tree when `C >= 32`; `0` forces the serial per-cell kernel. |
+
+The backward pass accumulates the feature gradient with atomics, so the feature gradient is not
+bit-reproducible across runs. The depth gradient is a per-cell reduction; the warp reduction fixes
+the summation order, so it is deterministic, but it differs from the serial per-cell order by float32
+rounding.
 
 ## BEVFusion SparseEncoder spconv
 

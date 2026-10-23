@@ -43,6 +43,7 @@ from .hard_voxelize import (
     voxelization,
 )
 from .voxel_pooling_train import voxel_pooling_train, voxel_pooling_train_reference
+from .voxel_pool_depth import voxel_pool_depth, voxel_pool_depth_reference
 from .points_in_boxes_all import points_in_boxes_all, points_in_boxes_all_reference
 from .radius import radius, radius_graph, radius_graph_reference, radius_reference
 
@@ -87,6 +88,8 @@ __all__ = [
     "voxelization",
     "voxel_pooling_train",
     "voxel_pooling_train_reference",
+    "voxel_pool_depth",
+    "voxel_pool_depth_reference",
     "points_in_boxes_all",
     "points_in_boxes_all_reference",
     "radius",

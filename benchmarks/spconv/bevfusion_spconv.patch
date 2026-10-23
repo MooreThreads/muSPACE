@@ -1,0 +1,5 @@
+--- mmdet3d/ops/spconv/ops.py
++++ mmdet3d/ops/spconv/ops.py
+@@ -17,1 +17,1 @@
+-from . import sparse_conv_ext
++from mu_space.ops import spconv_ext as sparse_conv_ext

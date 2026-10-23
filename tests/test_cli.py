@@ -19,10 +19,11 @@ ALL_RECIPES = (
     "maptrv2",
     "openvla",
     "qcnet",
+    "qwendrive",
     "sparsedrive",
     "uniad",
 )
-# SparseDrive is integrated by the runtime patcher only and ships no checkout patches.
+# SparseDrive and Qwen-Drive are integrated by runtime patchers and ship no checkout patches.
 RECIPES = (
     "bevfusion",
     "bevformer",
@@ -165,6 +166,14 @@ def test_recipe_declares_every_patch_as_package_data(slug):
 def test_sparsedrive_recipe_is_runtime_only():
     # SparseDrive is integrated by the runtime patcher only and ships no checkout patches.
     recipe = migration.load_recipe("sparsedrive")
+    assert recipe.patch_names == ()
+    assert migration._recipe_patches(recipe) == ()
+    assert not (recipe.root / "patches").exists()
+
+
+def test_qwendrive_recipe_is_runtime_only():
+    # Qwen-Drive is integrated by the runtime patcher only and ships no checkout patches.
+    recipe = migration.load_recipe("qwendrive")
     assert recipe.patch_names == ()
     assert migration._recipe_patches(recipe) == ()
     assert not (recipe.root / "patches").exists()

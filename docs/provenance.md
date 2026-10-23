@@ -15,6 +15,15 @@ File mapping:
 | MSDA FFI launcher | `csrc/ms_deformable_attn/ms_deform_attn_musa.mu` | Reduced to canonical MSDA forward/backward launchers. |
 | MMCV Python reference path | `mu_space/ops/multi_scale_deformable_attn.py` | Rewritten as a mmcv-free canonical API with explicit backend dispatch and reporting. |
 
+muSPACE additions to the upstream lineage:
+
+- An explicit accumulation type (`acc_t`) on the kernels plus an FFI dtype dispatch, so BF16
+  tensors are stored in BF16 while the sampling geometry, the bilinear weights and the
+  accumulators stay in FP32. Upstream MMCV templates its MSDA kernels on the storage type only;
+  this FP32 accumulation policy and the BF16 dispatch are local work.
+- Dtype normalization of `sampling_locations` and `attention_weights` in the Python op, and FP32
+  gradient buffers for BF16 backward calls.
+
 Copyright and license:
 
 - OpenMMLab MMCV is distributed under the Apache License 2.0.
@@ -134,14 +143,17 @@ inputs. `mu_space.patcher.bevfusion_patcher` installs it into a loaded BEVFusion
 ## Deformable Aggregation (SparseDrive)
 
 muSPACE provides a canonical MUSA implementation of SparseDrive's multi-camera multi-scale
-deformable feature aggregation. The native path uses SparseDrive's production kernels
-(FastDivmod forward + optimized backward, exposed as `*_opt`) and is compiled into `libmuspace_ops.so`.
+deformable feature aggregation. The source exposes a baseline kernel pair carried over from the
+pinned upstream revision alongside an optimized pair (`*_opt`) that decomposes the flat thread index
+with FastDivmod; the muSPACE Python wrapper calls the optimized pair. Both are compiled into
+`libmuspace_ops.so`.
 
 File mapping:
 
 | Source lineage | muSPACE file | Notes |
 | --- | --- | --- |
-| SparseDrive `deformable_aggregation_cuda.mu` | `csrc/deformable_aggregation/deformable_aggregation_musa.mu` | Baseline + optimized (`*_opt`, from former forward_v1 / backward_v3) kernels. |
+| SparseDrive `deformable_aggregation_cuda.cu` at `52c4c05b6d446b710c8a12eb9fb19d698b33cb2b` | `csrc/deformable_aggregation/deformable_aggregation_musa.mu` | Baseline kernels; verified token-identical to that upstream revision. |
+| Internal SparseDrive MUSA port `deformable_aggregation_cuda.mu` | same file | Optimized `*_opt` kernels (formerly forward_v1 / backward_v3) with FastDivmod index decomposition. No public upstream revision contains them. |
 | SparseDrive `deformable_aggregation.cpp` | merged into the `.mu` above | Tensor API adapted to muSPACE conventions (`PrivateUse1`, contiguous checks). |
 | SparseDrive Python autograd wrapper | `mu_space/ops/deformable_aggregation.py` | Canonical API with `backend=auto|musa|reference`, plus SparseDrive aliases. |
 
@@ -161,9 +173,33 @@ output = deformable_aggregation(
 Constraint carried from upstream: `num_groups <= 8` and `num_embeds % num_groups == 0`.
 
 `model_examples/SparseDrive/manifest.yaml` pins
-`52c4c05b6d446b710c8a12eb9fb19d698b33cb2b`. That commit is a candidate pin: it has not been
-verified against the kernel lineage recorded above, so the recipe ships no checkout patches and
-the integration stays runtime-only until the comparison is done.
+`fbadea693cbef3f3daea7705e521c0dd3321605c`. The four baseline device functions were compared
+against the source at `52c4c05b6d446b710c8a12eb9fb19d698b33cb2b` (`bilinear_sampling`,
+`bilinear_sampling_grad`, `deformable_aggregation_kernel`, and
+`deformable_aggregation_grad_kernel`) and are token-identical there: the only differences are
+clang-format layout and the `const` qualifiers on the out-parameter references. Upstream then
+widened the launch indexing in `4958e1e` (``Fix large-batch deformable aggregation indexing``,
+2026-09-15): `num_kernels`, the flat thread index, and the grid computation became 64-bit, with a
+grid bounds check and `cudaGetLastError()` after each launch. The arithmetic did not change, and
+the MUSA kernels carry the same 64-bit indexing, so the lineage claim survives the pin move.
+
+Both kernel pairs now advance the flat index in 64 bits, and a launch grid beyond the hardware
+limit is rejected instead of truncated. `benchmarks/deformable_aggregation/large_batch_check.py`
+exercises this with 4.42e9 threads: the single launch matches the sum over ten-point chunks to
+3.3e-07, while the previous 32-bit indexing returned an empty result.
+
+The optimized `*_opt` kernels are not part of the public upstream repository. A full walk of its
+history (all refs, 29 commits, no `.mu` or `.muh` file ever added) finds no `forward_v1`,
+`backward_v3`, or FastDivmod variant of the operator, so those kernels are attributed to an
+internal SparseDrive MUSA port rather than to a public revision. The recipe ships no checkout
+patches and the integration stays runtime-only.
+
+SparseDrive's attention blocks are not a muSPACE operator: they belong to upstream
+`flash-attn`, whose kernels are CUDA-only and whose `FlashAttention.forward` asserts a CUDA
+device. When MATE is installed, `mu_space.patcher.runtime` registers a `flash_attn` package
+backed by `mate.flash_attn_varlen_func` and rebinds that forward method, so the arithmetic stays
+with MATE and the checkout is untouched. Without MATE the module is left alone and the import
+failure documented in the recipe stands.
 
 ## Radius neighborhood query
 
@@ -178,6 +214,33 @@ sorted non-negative batch labels, and tensors whose point and output indexing
 fits the internal 32-bit launch dimensions. The implementation scans each
 segment in deterministic x-index order and does not impose a per-segment
 point-count limit.
+
+## Depth-aware voxel pooling (Qwen-Drive-1.0)
+
+`mu_space.ops.voxel_pool_depth` follows the public contract of Qwen-Drive-1.0's view-transform
+operator:
+
+```python
+voxel_pool_depth(img_feats, img_depth, voxel_coords, mask, B, X, Y, Z)
+```
+
+with `img_feats [B, N_sweep * N_cam, C, H, W]`, `img_depth [B * N_sweep * N_cam, D, H, W]`,
+`voxel_coords [B, N_sweep, N_cam, D, H, W, 4]` and output `[B, N_cam, X, Y, Z, C]`. The
+reference checkout is `Qwen-Drive-1.0` at
+`28091c1532e869bc7aee91fc0aef6b3e6fd0b2e0`; the upstream operator lives in
+`src/qwen_drive_perception/ops/voxel_pool/`.
+
+Provenance boundary: the MUSA source (`csrc/pooling/voxel_pool_depth_musa.mu`) is a clean-room
+TVM FFI/DLPack implementation and does not include the upstream CUDA/PyTorch extension source. The
+default launch mirrors the upstream one-thread-per-`(interval, channel)` mapping; the packed
+kernel is a muSPACE addition used automatically for aligned multiples of four channels. The Python
+wrapper keeps the upstream call signature. On MUSA the checkout still JIT-loads its CUDA extension,
+and the view-transform frustum property targets CUDA or CPU, so `qwendrive_patcher` rebinds
+`ops.voxel_pool_depth`, the multi-scale deformable attention symbols, and that frustum property.
+
+Upstream defines backward kernels in the extension but no Python autograd method, so muSPACE's
+backward was validated against the upstream CUDA `voxel_pool_depth_backward_all` entry point rather
+than against a Python reference; see `benchmarks/voxel_pool_depth/README.md`.
 
 # BEVDepth voxel pooling
 

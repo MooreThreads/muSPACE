@@ -22,6 +22,7 @@ from .runtime import (
     DeformConv2dPatcher,
     PatchError,
     PatchReport,
+    QwenDrivePatcher,
     SparseDrivePatcher,
     default_patcher,
     bevfusion_patcher,
@@ -30,6 +31,7 @@ from .runtime import (
     flashocc_patcher,
     modulated_deform_conv_patcher,
     deform_conv_patcher,
+    qwendrive_patcher,
     sparsedrive_patcher,
 )
 
@@ -45,6 +47,7 @@ __all__ = [
     "DeformConv2dPatcher",
     "PatchError",
     "PatchReport",
+    "QwenDrivePatcher",
     "Recipe",
     "SparseDrivePatcher",
     "bevfusion_patcher",
@@ -60,6 +63,7 @@ __all__ = [
     "deform_conv_patcher",
     "migrate_recipe",
     "restore_bevformer",
+    "qwendrive_patcher",
     "restore_recipe",
     "sparsedrive_patcher",
 ]

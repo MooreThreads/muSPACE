@@ -173,7 +173,8 @@ __global__ void bev_pool_v2_grad_depth_kernel(const float* grad_out,
   for (int channel = 0; channel < channels; ++channel) {
     sum += grad_out[ranks_bev[point] * channels + channel] * feat[ranks_feat[point] * channels + channel];
   }
-  grad_depth[ranks_depth[point]] = sum;
+  // Several projected points can share one depth logit; accumulate their gradients.
+  atomicAdd(&grad_depth[ranks_depth[point]], sum);
 }
 
 __global__ void bev_pool_v2_grad_feat_kernel(const float* grad_out,

@@ -1292,6 +1292,8 @@ def _install_mate_flash_attention_module() -> list[ModuleType]:
 class SparseDrivePatcher:
     """Install SparseDrive deformable aggregation runtime replacement."""
 
+    import_failure = SPARSEDRIVE_IMPORT_FAILURE
+
     def __init__(self) -> None:
         self._originals: dict[tuple[str, str], object] = {}
         self._strict: bool | None = None
@@ -1367,7 +1369,7 @@ class SparseDrivePatcher:
             return importlib.import_module(SPARSEDRIVE_OPS_MODULE)
         except ImportError as exc:
             if not _missing_sparsedrive_extension(exc):
-                raise PatchError(f"{SPARSEDRIVE_IMPORT_FAILURE} ({exc})") from exc
+                raise PatchError(f"{self.import_failure} ({exc})") from exc
             installed = _install_sparsedrive_extension_placeholder()
             try:
                 target = importlib.import_module(SPARSEDRIVE_OPS_MODULE)
@@ -1510,6 +1512,57 @@ class SparseDrivePatcher:
             _restore_attrs(self._originals)
             self._release_extension_placeholder()
             raise
+
+
+class Sparse4DPatcher(SparseDrivePatcher):
+    """Install the Sparse4D deformable aggregation runtime replacement.
+
+    Sparse4D v3.0 shares SparseDrive's ``projects.mmdet3d_plugin.ops`` layout and
+    binding names, so the ops rebind, the extension placeholder and the CUDA device
+    shim are reused.  Sparse4D has no attention module and does not import
+    flash-attn, so the MATE bridge is deliberately skipped.
+
+    The Sparse4D plugin imports ``mmdet`` (and therefore ``mmcv.ops``) while its
+    package initializes.  With the lite ``mmcv`` wheel used by this recipe, that
+    import needs the legacy extension guard; this patcher owns the guard and
+    releases it from ``restore()``.
+    """
+
+    import_failure = (
+        "Sparse4D ops package import failed. Ensure the Sparse4D checkout is on "
+        "PYTHONPATH and install model_examples/Sparse4D/requirements.lock."
+    )
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._mmcv_guard = False
+
+    def apply(self, *, strict: bool | None = None) -> PatchReport:
+        installed = _guard_legacy_mmcv_extensions()
+        self._mmcv_guard = self._mmcv_guard or installed
+        try:
+            return super().apply(strict=strict)
+        except BaseException:
+            if installed:
+                _release_legacy_mmcv_extensions()
+                self._mmcv_guard = False
+            raise
+
+    def restore(self) -> PatchReport:
+        try:
+            report = super().restore()
+        finally:
+            if self._mmcv_guard:
+                _release_legacy_mmcv_extensions()
+                self._mmcv_guard = False
+        return report
+
+    def _install_attention_bridge(self) -> None:
+        # Sparse4D v3.0 has no projects/mmdet3d_plugin/models/attention.py.
+        return
+
+    def _patch_sparsedrive_attention(self) -> str | None:
+        return None
 
 
 class BEVFusionIou3dPatcher:
@@ -2021,6 +2074,7 @@ default_patcher = DefaultPatcher()
 bevfusion_patcher = BEVFusionPatcher()
 flashocc_patcher = FlashOCCPatcher()
 sparsedrive_patcher = SparseDrivePatcher()
+sparse4d_patcher = Sparse4DPatcher()
 modulated_deform_conv_patcher = ModulatedDeformConv2dPatcher()
 deform_conv_patcher = DeformConv2dPatcher()
 bevfusion_iou3d_patcher = BEVFusionIou3dPatcher()
@@ -2038,6 +2092,7 @@ __all__ = [
     "PatchError",
     "PatchReport",
     "SparseDrivePatcher",
+    "Sparse4DPatcher",
     "QwenDrivePatcher",
     "bevfusion_patcher",
     "default_patcher",
@@ -2047,5 +2102,6 @@ __all__ = [
     "modulated_deform_conv_patcher",
     "deform_conv_patcher",
     "sparsedrive_patcher",
+    "sparse4d_patcher",
     "qwendrive_patcher",
 ]

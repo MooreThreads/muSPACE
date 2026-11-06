@@ -1,0 +1,42 @@
+# Install the platform-specific PyTorch and torch_musa build separately, then this stack.
+#
+# Derived from the pinned upstream requirement.txt with the substitutions this repository
+# uses for the OpenMMLab 1.x model recipes:
+#
+#   * Upstream pins torch 1.13 + CUDA 11.6. That stack is not used here; install the
+#     platform torch/torch_musa pair listed in README.md instead.
+#   * mmcv_full 1.7.1 is replaced by the pure-Python mmcv 1.7.0. Sparse4D's plugin does
+#     not need compiled mmcv operators; it only needs the deformable_aggregation binding
+#     that muSPACE replaces. sparse4d_patcher installs the mmcv._ext guard required by
+#     mmdet's imports and releases it on restore.
+#   * Sparse4D v3.0's projects/mmdet3d_plugin imports mmcv and mmdet only. It does not
+#     import mmdet3d, so the repository's mmdet3d 1.0.0rc4 / 0.17.1 compatibility
+#     question does not apply to this recipe.
+#   * nuscenes-devkit 1.1.10 works on Python 3.10 only with a current motmetrics; the
+#     upstream 1.1.3 release imports collections.Iterable, which is gone in 3.10.
+#   * The upstream samplers import IPython.embed for debugging, so ipython must be
+#     importable even though the fixture never calls it.
+#   * numpy stays at the upstream 1.23.5 pin because Sparse4D's dataset code uses the
+#     np.int and np.bool aliases that NumPy 1.24 removed.
+#   * pandas, scipy, scikit-learn and yapf are moved to releases that still publish
+#     Python 3.10 wheels; the upstream pins predate them.
+#   * scikit-learn is required by tools/anchor_generator.py (K-means anchors).
+setuptools==59.5.0
+numpy==1.23.5
+mmcv==1.7.0
+mmdet==2.28.2
+nuscenes-devkit==1.1.10
+pyquaternion==0.9.9
+motmetrics==1.4.0
+ipython==8.18.1
+matplotlib==3.5.2
+opencv-python==4.11.0.86
+pycocotools==2.0.7
+scipy==1.10.1
+scikit-learn==1.3.2
+shapely==1.8.5
+pandas==1.5.3
+prettytable==3.9.0
+tensorboard==2.14.1
+yapf==0.40.2
+urllib3==1.26.16

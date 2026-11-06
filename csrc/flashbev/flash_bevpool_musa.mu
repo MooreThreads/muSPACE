@@ -39,7 +39,10 @@ __device__ inline bool project_point(const float* projection,
   const float safe_depth  = fmaxf(depth, epsilon);
   *u                      = numerator_u / safe_depth;
   *v                      = numerator_v / safe_depth;
-  return *u >= 0.0f && *u < image_w && *v >= 0.0f && *v < image_h;
+  // Gate on the projection ratio rather than the approximate quotient so an
+  // exactly on-edge sample cannot round into the image.
+  return numerator_u >= 0.0f && numerator_v >= 0.0f && numerator_u < image_w * safe_depth &&
+         numerator_v < image_h * safe_depth;
 }
 
 __global__ void flash_bevpool_forward_kernel(int   channels,

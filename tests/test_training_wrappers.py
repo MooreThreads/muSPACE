@@ -223,6 +223,11 @@ def test_openvla_rejects_zero_steps_before_requiring_a_checkout():
             "model_examples/SparseDrive/scripts/train_step_musa.py",
             "sparsedrive-",
         ),
+        (
+            "sparse4d_smoke",
+            "model_examples/Sparse4D/scripts/train_step_musa.py",
+            "sparse4d-",
+        ),
     ],
 )
 def test_scratch_directory_uses_explicit_work_dir(tmp_path, name, relative, prefix):
@@ -418,3 +423,82 @@ def test_prepare_anchors_explains_plan_command_gap(tmp_path):
     assert "kmeans_plan.py failed while clustering anchors" in result.stderr
     assert "navigation command" in result.stderr
     assert "v1.0-trainval" in result.stderr
+
+
+def _sparse4d_checkout(tmp_path: Path) -> Path:
+    checkout = tmp_path / "Sparse4D"
+    (checkout / "tools").mkdir(parents=True)
+    (checkout / "data/infos").mkdir(parents=True)
+    (checkout / "data/infos/nuscenes_infos_train.pkl").write_bytes(b"infos")
+    return checkout
+
+
+def test_sparse4d_prepare_dataset_passes_converter_flags(tmp_path):
+    checkout = _sparse4d_checkout(tmp_path)
+    (checkout / "tools/nuscenes_converter.py").write_text(
+        "import argparse\n"
+        "from pathlib import Path\n"
+        "parser = argparse.ArgumentParser()\n"
+        "parser.add_argument('--root_path')\n"
+        "parser.add_argument('--info_prefix')\n"
+        "parser.add_argument('--version')\n"
+        "parser.add_argument('--max_sweeps', type=int)\n"
+        "args = parser.parse_args()\n"
+        "prefix = Path(args.info_prefix)\n"
+        "prefix.parent.mkdir(parents=True, exist_ok=True)\n"
+        "prefix.with_name(prefix.name + '_infos_train.pkl').write_bytes(b'train')\n"
+        "prefix.with_name(prefix.name + '_infos_val.pkl').write_bytes(b'val')\n",
+        encoding="utf-8",
+    )
+    data_root = tmp_path / "nuscenes"
+    data_root.mkdir()
+    out_dir = tmp_path / "infos"
+    result = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "model_examples/Sparse4D/scripts/prepare_dataset.sh"),
+            "--checkout",
+            str(checkout),
+            "--data-root",
+            str(data_root),
+            "--out-dir",
+            str(out_dir),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=_python_on_path(tmp_path),
+    )
+    assert result.returncode == 0, result.stderr
+    assert (out_dir / "nuscenes_infos_train.pkl").is_file()
+    assert (out_dir / "nuscenes_infos_val.pkl").is_file()
+
+
+def test_sparse4d_prepare_anchors_uses_config_output_name(tmp_path):
+    checkout = _sparse4d_checkout(tmp_path)
+    (checkout / "tools/anchor_generator.py").write_text(
+        "import argparse\n"
+        "from pathlib import Path\n"
+        "parser = argparse.ArgumentParser()\n"
+        "parser.add_argument('--ann_file')\n"
+        "parser.add_argument('--num_anchor', type=int)\n"
+        "parser.add_argument('--output_file_name')\n"
+        "args = parser.parse_args()\n"
+        "Path(args.output_file_name).write_bytes(b'anchors')\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "model_examples/Sparse4D/scripts/prepare_anchors.sh"),
+            "--checkout",
+            str(checkout),
+            "--no-patch",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=_python_on_path(tmp_path),
+    )
+    assert result.returncode == 0, result.stderr
+    assert (checkout / "data/anchors/nuscenes_kmeans900.npy").is_file()

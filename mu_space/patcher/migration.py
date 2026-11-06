@@ -25,6 +25,7 @@ RECIPE_DIRECTORIES = {
     "openvla": "OpenVLA",
     "qcnet": "QCNet",
     "qwendrive": "QwenDrive",
+    "sparse4d": "Sparse4D",
     "sparsedrive": "SparseDrive",
     "uniad": "UniAD",
 }

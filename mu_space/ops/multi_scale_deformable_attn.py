@@ -207,6 +207,22 @@ def _normalize_inputs(
         sampling_locations = sampling_locations.to(dtype=value.dtype)
     if attention_weights.dtype != value.dtype:
         attention_weights = attention_weights.to(dtype=value.dtype)
+    if value.dim() != 4:
+        raise ValueError("value must have shape [B, S, H, C]")
+    if sampling_locations.dim() != 6 or sampling_locations.size(-1) != 2:
+        raise ValueError("sampling_locations must have shape [B, Q, H, L, P, 2]")
+    expected_attention_shape = tuple(sampling_locations.shape[:-1])
+    if tuple(attention_weights.shape) != expected_attention_shape:
+        raise ValueError(
+            f"attention_weights must have shape [B, Q, H, L, P] {expected_attention_shape}, "
+            f"got {tuple(attention_weights.shape)}"
+        )
+    if (
+        sampling_locations.size(0) != value.size(0)
+        or sampling_locations.size(2) != value.size(2)
+        or sampling_locations.size(3) != spatial_shapes.size(0)
+    ):
+        raise ValueError("sampling_locations dimensions must match value and spatial_shapes")
     return _to_contiguous(
         value, spatial_shapes, level_start_index, sampling_locations, attention_weights
     )
@@ -222,6 +238,11 @@ def multi_scale_deformable_attn(
     im2col_step: int = 64,
     backend: str = "auto",
 ) -> torch.Tensor:
+    """Multi-scale deformable attention.
+
+    ``attention_weights`` uses the query-major layout ``[B, Q, H, L, P]``;
+    ``sampling_locations`` uses ``[B, Q, H, L, P, 2]``.
+    """
     value, spatial_shapes, level_start_index, sampling_locations, attention_weights = (
         _normalize_inputs(
             value,

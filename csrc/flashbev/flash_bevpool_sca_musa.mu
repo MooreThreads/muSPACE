@@ -18,10 +18,14 @@ __device__ inline bool project(
     const float* p, float x, float y, float z, float eps, float image_h, float image_w, float* u, float* v) {
   const float d = p[8] * x + p[9] * y + p[10] * z + p[11];
   if (d <= 0.0f) return false;
-  const float safe_d = fmaxf(d, eps);
-  *u                 = (p[0] * x + p[1] * y + p[2] * z + p[3]) / safe_d;
-  *v                 = (p[4] * x + p[5] * y + p[6] * z + p[7]) / safe_d;
-  return *u >= 0.0f && *u < image_w && *v >= 0.0f && *v < image_h;
+  const float safe_d      = fmaxf(d, eps);
+  const float numerator_u = p[0] * x + p[1] * y + p[2] * z + p[3];
+  const float numerator_v = p[4] * x + p[5] * y + p[6] * z + p[7];
+  *u                      = numerator_u / safe_d;
+  *v                      = numerator_v / safe_d;
+  // Gate on the projection ratio rather than the approximate quotient so an
+  // exactly on-edge sample cannot round into the image.
+  return numerator_u >= 0.0f && numerator_v >= 0.0f && numerator_u < image_w * safe_d && numerator_v < image_h * safe_d;
 }
 
 __device__ inline float sample_bilinear(

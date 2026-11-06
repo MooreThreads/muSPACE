@@ -2,6 +2,11 @@
 
 ## Scope
 
+The deterministic r50-ish case uses `depth [1, 6, 88, 16, 44]`,
+`feat [1, 6, 16, 44, 64]`, a `128 x 128` BEV grid, and 200,000 projected
+points. Seed `2333` keeps every `ranks_depth` value unique, reproducing the
+upstream r50-ish projection; repeated depth ranks are also supported.
+
 Measured: `mu_space.ops.bev_pool_v2` (re-exported as `mu_space.bev_pool_v2`) with `backend="musa"`,
 through its public autograd boundary. The timed region covers the whole `forward-backward` path: the
 native forward launcher, and the backward pass that `output.backward(grad_output)` triggers,
@@ -20,8 +25,8 @@ operator are not measured.
 
 The case is one workload: the depth logits, the image features and the projection index tensors are
 drawn from the fixed seed, and the backward pass reuses the same tensors with a fixed `grad_output`.
-`ranks_depth` is drawn as a permutation, so every value stays unique; that is what the native
-backward's projection-input contract assumes.
+`ranks_depth` is drawn as a permutation, so every value stays unique, reproducing the upstream
+r50-ish projection; native backward also supports repeated depth ranks.
 
 ## Test environment
 

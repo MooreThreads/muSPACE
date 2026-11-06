@@ -19,6 +19,7 @@ Model recipes pin one upstream commit each:
 | `flashocc` | `449dc7947d6549ccb72a99d6f6d8c02f166ec0dd` |
 | `uniad` | `7b5bf15e0e49522b6553ddc48e67833e8f5f0f52` |
 | `sparsedrive` | `fbadea693cbef3f3daea7705e521c0dd3321605c` |
+| `sparse4d` | `4ec96edf0e7d9e80fbd75ef22e1d51a937d3a750` |
 | `qwendrive` | `28091c1532e869bc7aee91fc0aef6b3e6fd0b2e0` |
 
 PyTorch and torch_musa must use matching versions from the same SDK row. The wheel tag does not
@@ -86,8 +87,8 @@ model_examples/BEVFormer/scripts/prepare_checkout.sh ./BEVFormer
 mu-space migrate bevformer --checkout ./BEVFormer
 ```
 
-The same pair works for `flashocc`, `uniad`, `sparsedrive`, and `qwendrive` with their own recipe
-directory and checkout path. `prepare_checkout.sh` never patches: it exits non-zero when the origin
+The same pair works for `flashocc`, `uniad`, `sparsedrive`, `sparse4d`, and `qwendrive` with their
+own recipe directory and checkout path. `prepare_checkout.sh` never patches: it exits non-zero when the origin
 or the resulting `HEAD` does not match the manifest, so a stale or wrong checkout fails before
 migration.
 `mu-space restore <slug> --checkout <path>` reverses the recipe.
@@ -124,14 +125,20 @@ from mu_space.patcher import default_patcher
 default_patcher.apply()
 ```
 
-FlashOcc, SparseDrive, and Qwen-Drive use their own patchers for their own operators. Qwen-Drive
-also needs the checkout `src` directory on `PYTHONPATH` before `apply()`:
+FlashOcc, SparseDrive, Sparse4D, and Qwen-Drive use their own patchers for their own operators.
+Qwen-Drive also needs the checkout `src` directory on `PYTHONPATH` before `apply()`:
 
 ```python
-from mu_space.patcher import flashocc_patcher, qwendrive_patcher, sparsedrive_patcher
+from mu_space.patcher import (
+    flashocc_patcher,
+    qwendrive_patcher,
+    sparse4d_patcher,
+    sparsedrive_patcher,
+)
 
 flashocc_patcher.apply()
 sparsedrive_patcher.apply()
+sparse4d_patcher.apply()
 qwendrive_patcher.apply()
 ```
 
@@ -201,3 +208,16 @@ model_examples/SparseDrive/scripts/validate_fixture.sh --checkout ./SparseDrive 
 
 See `model_examples/SparseDrive/fixture_validation.md` for the acceptance criteria and the
 prerequisites, including the `flash_attn` import the pinned model package requires.
+
+Sparse4D shares the SparseDrive `deformable_aggregation` binding and uses a real nuScenes
+single-scene fixture. Its plugin imports `mmcv` and `mmdet` but not `mmdet3d`, so the recipe does
+not install `mmdet3d`. Prepare its info files and anchors, then validate strict native dispatch:
+
+```bash
+model_examples/Sparse4D/scripts/prepare_dataset.sh --checkout ./Sparse4D --data-root /path/to/nuscenes
+model_examples/Sparse4D/scripts/prepare_anchors.sh --checkout ./Sparse4D
+model_examples/Sparse4D/scripts/validate_fixture.sh --strict \
+  --checkout ./Sparse4D --data-root /path/to/nuscenes
+```
+
+See `model_examples/Sparse4D/fixture_validation.md` for the acceptance criteria.

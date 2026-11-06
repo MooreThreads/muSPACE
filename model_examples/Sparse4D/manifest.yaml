@@ -1,0 +1,18 @@
+name: Sparse4D
+repository: https://github.com/HorizonRobotics/Sparse4D.git
+reference_branch: v3.0
+reference_commit: 4ec96edf0e7d9e80fbd75ef22e1d51a937d3a750
+default_checkout: Sparse4D
+integration:
+  maintains_fork: false
+  operator: deformable_aggregation
+  runtime_patcher: mu_space.patcher.sparse4d_patcher
+  training_entrypoint: model_examples/Sparse4D/scripts/train_step_musa.py
+  strict_backend: musa
+patch_marker: .mu_space_sparse4d.json
+# The recipe ships no checkout patches. Sparse4D v3.0 exposes the same
+# projects/mmdet3d_plugin deformable_aggregation binding as SparseDrive, so
+# sparse4d_patcher rebinds it at runtime and registers a placeholder for the
+# unbuilt deformable_aggregation_ext extension. The pinned plugin imports only
+# mmcv and mmdet; it does not import mmdet3d.
+patches: []

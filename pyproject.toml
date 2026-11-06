@@ -111,6 +111,10 @@ include = ["mu_space*"]
     "model_examples/UniAD/patches/uniad-10-panseg-assigner-device.patch",
     "model_examples/UniAD/patches/uniad-11-remove-debug-imports.patch",
 ]
+"share/mu-space/model_examples/Sparse4D" = [
+    "model_examples/Sparse4D/manifest.yaml",
+    "model_examples/Sparse4D/requirements.lock",
+]
 "share/mu-space/model_examples/SparseDrive" = [
     "model_examples/SparseDrive/manifest.yaml",
     "model_examples/SparseDrive/requirements.lock",

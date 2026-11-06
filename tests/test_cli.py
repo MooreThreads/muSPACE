@@ -171,6 +171,14 @@ def test_sparsedrive_recipe_is_runtime_only():
     assert not (recipe.root / "patches").exists()
 
 
+def test_sparse4d_recipe_is_runtime_only():
+    # Sparse4D shares the SparseDrive operator lineage and ships no checkout patches.
+    recipe = migration.load_recipe("sparse4d")
+    assert recipe.patch_names == ()
+    assert migration._recipe_patches(recipe) == ()
+    assert not (recipe.root / "patches").exists()
+
+
 def test_qwendrive_recipe_is_runtime_only():
     # Qwen-Drive is integrated by the runtime patcher only and ships no checkout patches.
     recipe = migration.load_recipe("qwendrive")

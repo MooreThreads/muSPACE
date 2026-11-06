@@ -5,7 +5,13 @@ import types
 import pytest
 import torch
 
-from mu_space.patcher import DefaultPatcher, PatchError, QwenDrivePatcher, SparseDrivePatcher
+from mu_space.patcher import (
+    DefaultPatcher,
+    PatchError,
+    QwenDrivePatcher,
+    SparseDrivePatcher,
+    Sparse4DPatcher,
+)
 from mu_space.patcher import runtime
 from mu_space.patcher.runtime import SPARSEDRIVE_CUDA_SHIM, _MissingLegacyExtension
 
@@ -544,6 +550,107 @@ def test_sparsedrive_patcher_revalidates_the_cached_ops_probe(tmp_path, monkeypa
     assert probe.DAF_VALID is False
     assert not hasattr(probe, "feature_maps_format")
     assert ops_module.deformable_aggregation_function.__name__ == "deformable_aggregation_function"
+
+
+SPARSE4D_MODELS = "projects.mmdet3d_plugin.models"
+
+
+def _install_sparse4d_models(tmp_path):
+    """Add the cached DAF and DAF_VALID probes Sparse4D keeps in its model package."""
+
+    models = tmp_path / "projects" / "mmdet3d_plugin" / "models"
+    models.mkdir(parents=True, exist_ok=True)
+    (models / "__init__.py").write_text("", encoding="utf-8")
+    (models / "blocks.py").write_text("DAF = None\n", encoding="utf-8")
+    (models / "sparse4d.py").write_text("DAF_VALID = False\n", encoding="utf-8")
+    return models
+
+
+def test_sparse4d_patcher_rebinds_daf_and_cached_probe(tmp_path, monkeypatch):
+    ops_init = (
+        "from .deformable_aggregation import DeformableAggregationFunction\n"
+        "\n"
+        "def deformable_aggregation_function(*args, **kwargs):\n"
+        "    return DeformableAggregationFunction.apply(*args)\n"
+        "\n"
+        "def feature_maps_format(value, inverse=False):\n"
+        "    return value\n"
+    )
+    _install_sparsedrive_checkout(tmp_path, monkeypatch, ops_init)
+    _install_sparse4d_models(tmp_path)
+    blocks = importlib.import_module("projects.mmdet3d_plugin.models.blocks")
+    probe = importlib.import_module("projects.mmdet3d_plugin.models.sparse4d")
+    assert blocks.DAF is None
+    assert probe.DAF_VALID is False
+
+    patcher = Sparse4DPatcher()
+    report = patcher.apply(strict=True)
+
+    assert report.action == "applied"
+    assert probe.DAF_VALID is True
+    assert blocks.DAF.__name__ == "muspace_deformable_aggregation_strict"
+    ops = sys.modules[SPARSEDRIVE_OPS]
+    assert probe.feature_maps_format is ops.feature_maps_format
+    assert SPARSEDRIVE_OPS in report.patched_modules
+    assert SPARSE4D_MODELS + ".blocks" in report.patched_modules
+    assert SPARSE4D_MODELS + ".sparse4d" in report.patched_modules
+    assert patcher.apply(strict=True).action == "already-applied"
+
+    patcher.restore()
+
+    assert probe.DAF_VALID is False
+    assert blocks.DAF is None
+    assert not hasattr(probe, "feature_maps_format")
+    assert SPARSEDRIVE_EXT not in sys.modules
+    assert ops.deformable_aggregation_function.__name__ == "deformable_aggregation_function"
+
+
+def test_sparse4d_patcher_does_not_bridge_attention(tmp_path, monkeypatch):
+    _install_sparsedrive_checkout(tmp_path, monkeypatch, SPARSEDRIVE_OPS_INIT)
+    _install_sparsedrive_attention(tmp_path, monkeypatch)
+    attention = importlib.import_module(SPARSEDRIVE_ATTENTION)
+    _install_fake_mate(monkeypatch)
+    monkeypatch.delitem(sys.modules, "flash_attn", raising=False)
+
+    patcher = Sparse4DPatcher()
+    report = patcher.apply()
+
+    assert "flash_attn" not in sys.modules
+    assert SPARSEDRIVE_ATTENTION not in report.patched_modules
+    assert attention.FlashAttention.forward.__name__ == "forward"
+
+    patcher.restore()
+    assert "flash_attn" not in sys.modules
+
+
+def test_sparse4d_patcher_keeps_unrelated_import_errors(tmp_path, monkeypatch):
+    _install_sparsedrive_checkout(
+        tmp_path, monkeypatch, "import definitely_missing_openmmlab_dependency\n"
+    )
+    patcher = Sparse4DPatcher()
+
+    with pytest.raises(PatchError, match="Sparse4D ops package import failed"):
+        patcher.apply()
+
+    assert SPARSEDRIVE_EXT not in sys.modules
+
+
+def test_sparse4d_patcher_owns_and_releases_mmcv_guard(tmp_path, monkeypatch):
+    _install_sparsedrive_checkout(tmp_path, monkeypatch, SPARSEDRIVE_OPS_INIT)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        runtime, "_guard_legacy_mmcv_extensions", lambda: calls.append("guard") or True
+    )
+    monkeypatch.setattr(
+        runtime, "_release_legacy_mmcv_extensions", lambda: calls.append("release") or True
+    )
+    patcher = Sparse4DPatcher()
+
+    patcher.apply()
+    assert calls == ["guard"]
+
+    patcher.restore()
+    assert calls == ["guard", "release"]
 
 
 class _FakeMusa:

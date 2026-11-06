@@ -83,6 +83,34 @@ def _channel_fixture(channels, device="cpu"):
     )
 
 
+def _duplicate_depth_fixture(channels=2, device="cpu"):
+    depth = (
+        torch.tensor([0.1, 1.0, 3.0, 10.0], dtype=torch.float32, device=device)
+        .view(1, 1, 1, 1, 4)
+        .requires_grad_()
+    )
+    feat = (
+        torch.arange(1, 4 * channels + 1, dtype=torch.float32, device=device)
+        .view(1, 4, 1, 1, channels)
+        .requires_grad_()
+    )
+    ranks_depth = torch.tensor([1, 1, 1, 1], dtype=torch.int32, device=device)
+    ranks_feat = torch.zeros(4, dtype=torch.int32, device=device)
+    ranks_bev = torch.ones(4, dtype=torch.int32, device=device)
+    interval_starts = torch.tensor([0], dtype=torch.int32, device=device)
+    interval_lengths = torch.tensor([4], dtype=torch.int32, device=device)
+    return (
+        depth,
+        feat,
+        ranks_depth,
+        ranks_feat,
+        ranks_bev,
+        (1, 1, 2, 2, channels),
+        interval_starts,
+        interval_lengths,
+    )
+
+
 def test_reference_forward_backward_on_cpu():
     clear_dispatch_report()
     tensors = _fixture()
@@ -138,6 +166,14 @@ def test_reference_empty_ranks_returns_zero_and_zero_gradients():
     output.sum().backward()
     torch.testing.assert_close(depth.grad, torch.zeros_like(depth.grad))
     torch.testing.assert_close(feat.grad, torch.zeros_like(feat.grad))
+
+
+def test_reference_backward_accumulates_duplicate_depth_ranks():
+    tensors = _duplicate_depth_fixture()
+    output = bev_pool_v2(*tensors, backend="reference")
+    output.sum().backward()
+    grad = tensors[0].grad.flatten()
+    torch.testing.assert_close(grad, torch.tensor([0.0, 12.0, 0.0, 0.0]))
 
 
 def test_bev_feature_shape_requires_all_five_dimensions():
@@ -238,3 +274,34 @@ def test_native_musa_channel_paths_match_reference(channels):
     report = get_last_dispatch_report()
     assert report is not None
     assert report.selected_backend == "musa"
+
+
+@pytest.mark.parametrize("channels", [2, 64])
+@pytest.mark.skipif(
+    not hasattr(torch, "musa") or not torch.musa.is_available(), reason="MUSA required"
+)
+def test_native_musa_accumulates_duplicate_depth_ranks_backward(channels):
+    tensors = _duplicate_depth_fixture(channels, device="musa")
+    ref_tensors = tuple(
+        tensor.detach().cpu().clone().requires_grad_(tensor.requires_grad)
+        if isinstance(tensor, torch.Tensor) and tensor.dtype == torch.float32
+        else tensor.detach().cpu().clone()
+        if isinstance(tensor, torch.Tensor)
+        else tensor
+        for tensor in tensors
+    )
+
+    reference = bev_pool_v2(*ref_tensors, backend="reference")
+    actual = bev_pool_v2(*tensors, backend="musa")
+    torch.testing.assert_close(actual.cpu(), reference, rtol=1e-4, atol=1e-4)
+
+    actual.sum().backward()
+    reference.sum().backward()
+    torch.testing.assert_close(tensors[0].grad.cpu(), ref_tensors[0].grad, rtol=1e-4, atol=1e-4)
+    torch.testing.assert_close(tensors[1].grad.cpu(), ref_tensors[1].grad, rtol=1e-4, atol=1e-4)
+    torch.testing.assert_close(
+        tensors[0].grad.flatten()[1],
+        torch.tensor(2.0 * channels * (channels + 1), device="musa"),
+        rtol=1e-4,
+        atol=1e-4,
+    )

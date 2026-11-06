@@ -20,6 +20,7 @@ EXTENSION_SOURCES = (
     "csrc/ms_deformable_attn/ms_deform_attn_musa.mu",
     "csrc/deformable_conv/modulated_deform_conv_musa.mu",
     "csrc/sigmoid_focal_loss/sigmoid_focal_loss_musa.mu",
+    "csrc/grid_sample/grid_sample_musa.mu",
     "csrc/spconv/spconv_musa.mu",
     "csrc/geometry/boxes_iou_bev_musa.mu",
     "csrc/centerpoint/centerpoint_target_assign_musa.mu",
@@ -27,6 +28,7 @@ EXTENSION_SOURCES = (
     "csrc/pooling/voxel_pooling_train_musa.mu",
     "csrc/geometry/points_in_boxes_all_musa.mu",
     "csrc/geometry/radius_musa.mu",
+    "csrc/temporal_align/temporal_align_musa.mu",
 )
 
 

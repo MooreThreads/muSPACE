@@ -1,0 +1,69 @@
+#pragma once
+
+#include <musa_runtime.h>
+
+#include <cmath>
+#include <cstdint>
+
+namespace muspace::sampling {
+
+__device__ __forceinline__ float unnormalize(float coord, int64_t size, bool align_corners) {
+  if (align_corners) return ((coord + 1.0F) * static_cast<float>(size - 1)) * 0.5F;
+  return ((coord + 1.0F) * static_cast<float>(size) - 1.0F) * 0.5F;
+}
+
+__device__ __forceinline__ float clamp_coordinate(float coord, int64_t size, float* derivative) {
+  if (coord <= 0.0F) {
+    *derivative = 0.0F;
+    return 0.0F;
+  }
+  if (coord >= static_cast<float>(size - 1)) {
+    *derivative = 0.0F;
+    return static_cast<float>(size - 1);
+  }
+  *derivative = 1.0F;
+  return coord;
+}
+
+__device__ __forceinline__ float reflect_coordinate(float coord, int64_t size, bool align_corners, float* derivative) {
+  const float span = static_cast<float>(align_corners ? size - 1 : size);
+  if (span == 0.0F) {
+    *derivative = 0.0F;
+    return 0.0F;
+  }
+  const float low      = align_corners ? 0.0F : -0.5F;
+  const float distance = fabsf(coord - low);
+  const float extra    = fmodf(distance, span);
+  const float parity   = fmodf(floorf(distance / span), 2.0F);
+  const float sign     = coord < low ? -1.0F : 1.0F;
+  *derivative          = parity == 0.0F ? sign : -sign;
+  return parity == 0.0F ? extra + low : span - extra + low;
+}
+
+__device__ __forceinline__ float transform_coordinate(
+    float coord, int64_t size, int padding_mode, bool align_corners, float* derivative) {
+  *derivative = 1.0F;
+  if (padding_mode == 1) return clamp_coordinate(coord, size, derivative);
+  if (padding_mode == 2) {
+    coord = reflect_coordinate(coord, size, align_corners, derivative);
+    float clip_grad;
+    coord = clamp_coordinate(coord, size, &clip_grad);
+    *derivative *= clip_grad;
+  }
+  return coord;
+}
+
+__device__ __forceinline__ float source_coordinate(
+    float coord, int64_t size, int padding_mode, bool align_corners, float* derivative) {
+  // Keep non-finite and extreme coordinates away from integer conversion.
+  if (isnan(coord)) coord = -1.0F;
+  coord = transform_coordinate(unnormalize(coord, size, align_corners), size, padding_mode, align_corners, derivative);
+  *derivative *= 0.5F * static_cast<float>(align_corners ? size - 1 : size);
+  if (!isfinite(coord) || coord > 2147483520.0F || coord < -2147483520.0F) {
+    *derivative = 0.0F;
+    return -100.0F;
+  }
+  return coord;
+}
+
+}  // namespace muspace::sampling

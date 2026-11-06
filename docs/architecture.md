@@ -62,6 +62,7 @@ integration metadata, marker filename, and the ordered patch list with a `sha256
 | FlashOcc | `flashocc` | `449dc7947d6549ccb72a99d6f6d8c02f166ec0dd` | `.mu_space_flashocc.json` | `flashocc_patcher` |
 | UniAD | `uniad` | `7b5bf15e0e49522b6553ddc48e67833e8f5f0f52` | `.mu_space_uniad.json` | `default_patcher` |
 | SparseDrive | `sparsedrive` | `fbadea693cbef3f3daea7705e521c0dd3321605c` | `.mu_space_sparsedrive.json` | `sparsedrive_patcher` |
+| Sparse4D | `sparse4d` | `4ec96edf0e7d9e80fbd75ef22e1d51a937d3a750` | `.mu_space_sparse4d.json` | `sparse4d_patcher` |
 | Qwen-Drive | `qwendrive` | `28091c1532e869bc7aee91fc0aef6b3e6fd0b2e0` | `.mu_space_qwendrive.json` | `qwendrive_patcher` |
 
 The normal flow is identical for each of them, with `<Model>` and `<slug>` substituted:
@@ -89,11 +90,15 @@ than in code:
 - BEVFormer carries a separate `dependency_patches:` key for the legacy mmcv/mmdet3d sdist patches.
   Those are applied with `patch -p1` by `build_openmmlab_compat_wheels.sh` against extracted
   source distributions, not to the model checkout, so `mu-space migrate` never sees them.
-- SparseDrive and Qwen-Drive ship an empty `patches:` list. Their integration is runtime-only,
-  so migration writes a marker without modifying the checkout. SparseDrive's patcher additionally
-  covers the pinned checkout's unbuilt `deformable_aggregation_ext` CUDA extension: it registers a
-  placeholder so the upstream ops package imports without the operator build, and raises only if
-  something calls the extension directly. Any other import failure still surfaces unchanged.
+- SparseDrive, Sparse4D and Qwen-Drive ship an empty `patches:` list. Their integration is
+  runtime-only, so migration writes a marker without modifying the checkout. SparseDrive's patcher
+  additionally covers the pinned checkout's unbuilt `deformable_aggregation_ext` CUDA extension: it
+  registers a placeholder so the upstream ops package imports without the operator build, and raises
+  only if something calls the extension directly. Any other import failure still surfaces unchanged.
+  Sparse4D shares that ops layout and binding, so `sparse4d_patcher` subclasses the SparseDrive
+  patcher, reuses the extension placeholder and CUDA device shim, and skips the MATE/flash-attn
+  attention bridge because Sparse4D has no attention module. It also installs the `mmcv._ext` guard
+  for the lite `mmcv` wheel used by the recipe and releases it from `restore()`.
 
 Patch files are byte-exact inputs to `git apply`. Whitespace normalization silently breaks context
 matching, so `.pre-commit-config.yaml` excludes `*.patch` from the whitespace-fixing hooks.

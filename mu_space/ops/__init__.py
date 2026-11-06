@@ -33,6 +33,8 @@ from .flashbev import (
     flash_bevpool_sca_reference,
 )
 from .sigmoid_focal_loss import SigmoidFocalLoss, sigmoid_focal_loss, sigmoid_focal_loss_reference
+from .grid_sample import grid_sample, grid_sample_reference
+from .temporal_align import temporal_align, temporal_align_reference
 from . import spconv
 from .hard_voxelize import (
     Voxelization,
@@ -79,6 +81,10 @@ __all__ = [
     "SigmoidFocalLoss",
     "sigmoid_focal_loss",
     "sigmoid_focal_loss_reference",
+    "grid_sample",
+    "grid_sample_reference",
+    "temporal_align",
+    "temporal_align_reference",
     "spconv",
     "Voxelization",
     "dynamic_voxelize",

@@ -24,6 +24,7 @@ from .runtime import (
     PatchReport,
     QwenDrivePatcher,
     SparseDrivePatcher,
+    Sparse4DPatcher,
     default_patcher,
     bevfusion_patcher,
     bevdepth_patcher,
@@ -33,6 +34,7 @@ from .runtime import (
     deform_conv_patcher,
     qwendrive_patcher,
     sparsedrive_patcher,
+    sparse4d_patcher,
 )
 
 __all__ = [
@@ -50,6 +52,7 @@ __all__ = [
     "QwenDrivePatcher",
     "Recipe",
     "SparseDrivePatcher",
+    "Sparse4DPatcher",
     "bevfusion_patcher",
     "bevdepth_patcher",
     "default_patcher",
@@ -66,4 +69,5 @@ __all__ = [
     "qwendrive_patcher",
     "restore_recipe",
     "sparsedrive_patcher",
+    "sparse4d_patcher",
 ]

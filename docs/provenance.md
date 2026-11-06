@@ -170,6 +170,15 @@ output = deformable_aggregation(
 `deformable_aggregation_function` matches SparseDrive's call signature and casts inputs to
 `float32` / `int32`. Runtime replacement is available through `SparseDrivePatcher`.
 
+Sparse4D v3.0 (`4ec96edf0e7d9e80fbd75ef22e1d51a937d3a750`) carries the same
+`projects/mmdet3d_plugin/ops` layout: `deformable_aggregation_function`,
+`feature_maps_format`, the `DAF` binding in `models/blocks.py`, and the `DAF_VALID`
+probe in `models/sparse4d.py`. The recipe therefore adds no operator and no checkout
+patch; `mu_space.patcher.sparse4d_patcher` subclasses the SparseDrive patcher and
+rebinds the same entry points. Sparse4D's plugin imports `mmcv` and `mmdet` but not
+`mmdet3d`, so its recipe does not depend on the mmdet3d compatibility wheels used by
+other model examples.
+
 Constraint carried from upstream: `num_groups <= 8` and `num_embeds % num_groups == 0`.
 
 `model_examples/SparseDrive/manifest.yaml` pins
@@ -300,3 +309,38 @@ implementation with its own PyTorch reference path.
 inner loop from CenterPoint commit `3cf7d870537e287c99b43b68636ea392a5e6f519`
 (https://github.com/tianweiy/CenterPoint, MIT). It deliberately has no model, dataset, dataloader
 or autograd integration: callers split tasks and batches before calling it.
+
+## Grid sampling
+
+`mu_space.ops.grid_sample` provides the `torch.nn.functional.grid_sample` contract for 2-D NCHW
+and 3-D NCDHW inputs. The MUSA kernels in `csrc/grid_sample/grid_sample_musa.mu` and the shared
+coordinate helpers in `csrc/common/sampling.muh` are muSPACE-local implementations; no upstream
+CUDA source is vendored. The operator follows PyTorch's normalized-coordinate, corner-weight and
+gradient conventions, with FP32 geometry and accumulation for FP16/BF16 storage.
+## BEV temporal alignment
+
+`mu_space.ops.temporal_align` replaces the per-sample
+`torchvision.transforms.functional.rotate` loop that BEV temporal alignment runs in BEVFormer-style
+pipelines. The MUSA kernels in `csrc/temporal_align/temporal_align_musa.mu` and the Python
+reference in `mu_space/ops/temporal_align.py` are muSPACE-local implementations; no torchvision
+source is vendored and the operator does not import torchvision at runtime.
+
+The geometry follows torchvision's documented behaviour rather than the underlying `affine_grid`
+formulation, because the two disagree on non-square planes: the rotation is applied in pixel space
+about a corner-based centre (`center` keeps torchvision's corner convention, so a 200x200 plane
+defaults to the same centre both sides compute), and the sampling uses the `align_corners=False`
+mapping. Zeros padding, the `shift` translation applied after the rotation, and the integer-shift
+fast path are local additions with no upstream counterpart.
+
+Deliberate differences from the upstream loop:
+
+- Quarter turns snap to exact sine and cosine values. Float32 argument reduction moves the cosine
+  of a right angle by about 4e-8, which is enough to send a nearest-neighbour sample that sits on
+  an exact half pixel to the other side; the snap makes the native nearest path reproduce the
+  torchvision result bit for bit at those angles.
+- The backward pass scatters gradients with atomic accumulation, so repeated runs can differ in
+  the last bits. Only first-order derivatives with respect to the BEV plane are supported; the
+  rotation angle and the translation are inputs, not differentiable parameters.
+- The native kernels consume a channels-last plane; the Python op converts channels-first input
+  and converts the result back, and reports that conversion in its dispatch record like any other
+  layout adaptation.

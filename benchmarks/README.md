@@ -30,6 +30,8 @@ directory. The mapping is:
 | Standard deformable convolution (DCN) | [deform_conv/](deform_conv/README.md) | `mu_space.ops.DeformConv2d` |
 | FlashBEV pooling | [flashbev/](flashbev/README.md) | `mu_space.ops.flash_bevpool` |
 | FlashSCA pooling | [flashbev/](flashbev/README.md) | `mu_space.ops.flash_bevpool_sca` |
+| `grid_sample` | [grid_sample/](grid_sample/README.md) | `mu_space.ops.grid_sample` |
+| BEV temporal alignment | [temporal_align/](temporal_align/README.md) | `mu_space.ops.temporal_align` |
 | Sigmoid focal loss | [sigmoid_focal_loss/](sigmoid_focal_loss/README.md) | `mu_space.ops.sigmoid_focal_loss` |
 | BEVFusion SparseEncoder spconv | [spconv/](spconv/README.md) | `mu_space.ops.spconv`, legacy `sparse_conv_ext` shim |
 | BEVFusion BEV IoU / NMS | [boxes_iou_bev/](boxes_iou_bev/README.md) | `mu_space.ops.boxes_iou_bev`, `nms_bev`, `nms_bev_normal` |

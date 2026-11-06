@@ -1,3 +1,5 @@
+import math
+
 import pytest
 import torch
 
@@ -66,6 +68,37 @@ def _sca_fixture(device="cpu"):
     weights = torch.rand((1, 2, 2, 2, 2, 2, 2), dtype=torch.float32, device=device)
     weights.requires_grad_()
     return value, projections, spatial_shapes, level_start, image_size, offsets, weights
+
+
+def _upper_edge_sca_fixture(device="cpu", grid_z=2):
+    value = torch.tensor([0.1, 0.2], dtype=torch.float32, device=device).view(1, 1, 1, 2)
+    value.requires_grad_()
+    projections = torch.full((1, 1, 3, 4), math.pi / 2, dtype=torch.float32, device=device)
+    spatial_shapes = torch.tensor([[1, 1]], dtype=torch.int32, device=device)
+    level_start = torch.tensor([0], dtype=torch.int32, device=device)
+    image_size = torch.tensor([1, 1], dtype=torch.int32, device=device)
+    offsets = torch.zeros((1, 1, 1, 1, 1, 1, grid_z, 2), dtype=torch.float32, device=device)
+    offsets.requires_grad_()
+    weights = torch.ones((1, 1, 1, 1, 1, 1, grid_z), dtype=torch.float32, device=device)
+    weights.requires_grad_()
+    return value, projections, spatial_shapes, level_start, image_size, offsets, weights
+
+
+def _upper_edge_bevpool_fixture(device="cpu", grid_z=2):
+    image = torch.tensor([0.1, 0.2], dtype=torch.float32, device=device).view(1, 1, 1, 1, 2)
+    image.requires_grad_()
+    projections = torch.full((1, 1, 3, 4), math.pi / 2, dtype=torch.float32, device=device)
+    feature_size = torch.tensor([[[1, 1]]], dtype=torch.int32, device=device)
+    image_size = torch.tensor([1, 1], dtype=torch.int32, device=device)
+    return (
+        image,
+        projections,
+        feature_size,
+        image_size,
+        (1, 1, grid_z),
+        (1.0, 1.0, 1.0),
+        (0.0, 0.0, 0.0),
+    )
 
 
 def test_flash_bevpool_reference_forward_backward():
@@ -175,6 +208,53 @@ def test_flash_bevpool_sca_rejects_inconsistent_level_layout():
             (0.0, 0.0, 0.0),
             backend="reference",
         )
+
+
+def test_flash_bevpool_sca_reference_rejects_exact_upper_image_edge():
+    args = _upper_edge_sca_fixture()
+    output = flash_bevpool_sca(
+        *args, (1, 1, 2), (1.0, 1.0, 1.0), (0.0, 0.0, 0.0), backend="reference"
+    )
+    torch.testing.assert_close(output, torch.zeros_like(output))
+
+
+@pytest.mark.skipif(
+    not hasattr(torch, "musa") or not torch.musa.is_available(), reason="MUSA required"
+)
+def test_flash_bevpool_sca_native_matches_reference_at_exact_upper_image_edge():
+    native_args = _upper_edge_sca_fixture(device="musa")
+    reference_args = _upper_edge_sca_fixture()
+    actual = flash_bevpool_sca(
+        *native_args, (1, 1, 2), (1.0, 1.0, 1.0), (0.0, 0.0, 0.0), backend="musa"
+    )
+    expected = flash_bevpool_sca(
+        *reference_args, (1, 1, 2), (1.0, 1.0, 1.0), (0.0, 0.0, 0.0), backend="reference"
+    )
+    torch.testing.assert_close(actual.cpu(), expected, rtol=0, atol=0)
+    actual.sum().backward()
+    for tensor in (native_args[0], native_args[5], native_args[6]):
+        torch.testing.assert_close(tensor.grad, torch.zeros_like(tensor.grad), rtol=0, atol=0)
+
+
+def test_flash_bevpool_reference_rejects_exact_upper_image_edge():
+    args = _upper_edge_bevpool_fixture()
+    output = flash_bevpool(*args, backend="reference")
+    torch.testing.assert_close(output, torch.zeros_like(output))
+
+
+@pytest.mark.skipif(
+    not hasattr(torch, "musa") or not torch.musa.is_available(), reason="MUSA required"
+)
+def test_flash_bevpool_native_matches_reference_at_exact_upper_image_edge():
+    native_args = _upper_edge_bevpool_fixture(device="musa")
+    reference_args = _upper_edge_bevpool_fixture()
+    actual = flash_bevpool(*native_args, backend="musa")
+    expected = flash_bevpool(*reference_args, backend="reference")
+    torch.testing.assert_close(actual.cpu(), expected, rtol=0, atol=0)
+    actual.sum().backward()
+    torch.testing.assert_close(
+        native_args[0].grad, torch.zeros_like(native_args[0].grad), rtol=0, atol=0
+    )
 
 
 @pytest.mark.skipif(

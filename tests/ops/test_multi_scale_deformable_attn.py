@@ -242,6 +242,49 @@ def test_spatial_shape_dtype_is_validated():
         )
 
 
+def test_head_major_attention_weights_are_rejected():
+    value, spatial_shapes, level_start_index, sampling_locations, _ = _fixture(
+        batch=1, queries=3, heads=2, embed_dims=4, levels=((1, 2),), points=2
+    )
+    head_major = torch.rand(1, 2, 3, 1, 2)
+    with pytest.raises(ValueError, match="attention_weights must have shape"):
+        multi_scale_deformable_attn(
+            value,
+            spatial_shapes,
+            level_start_index,
+            sampling_locations,
+            head_major,
+            backend="reference",
+        )
+
+
+def test_sampling_locations_last_dim_is_validated():
+    value, spatial_shapes, level_start_index, sampling_locations, attention_weights = _fixture()
+    with pytest.raises(ValueError, match="sampling_locations must have shape"):
+        multi_scale_deformable_attn(
+            value,
+            spatial_shapes,
+            level_start_index,
+            sampling_locations[..., :1],
+            attention_weights,
+            backend="reference",
+        )
+
+
+@pytest.mark.skipif(
+    not hasattr(torch, "musa") or not torch.musa.is_available(), reason="MUSA required"
+)
+def test_native_musa_rejects_head_major_attention_weights():
+    tensors = _fixture(
+        device="musa", batch=1, queries=3, heads=2, embed_dims=2, levels=((1, 2),), points=2
+    )
+    head_major = tensors[4].transpose(1, 2).contiguous()
+    with pytest.raises(ValueError, match="attention_weights must have shape"):
+        multi_scale_deformable_attn(
+            tensors[0], tensors[1], tensors[2], tensors[3], head_major, backend="musa"
+        )
+
+
 def test_reference_out_of_range_samples_are_zero_with_zero_gradients():
     tensors = list(_fixture(batch=1, queries=2, heads=1, embed_dims=2, levels=((2, 2),), points=2))
     with torch.no_grad():

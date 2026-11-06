@@ -7,11 +7,13 @@
 | BEVDepth voxel pooling (train) | `mu_space.ops.voxel_pooling_train` | available for MUSA tensors | PyTorch reference fallback | BEVDepth runtime patcher | [voxel_pooling_train](../benchmarks/voxel_pooling_train/README.md) |
 | Depth-aware voxel pooling | `mu_space.ops.voxel_pool_depth` | FP32/FP16/BF16 forward and backward for MUSA tensors | PyTorch reference fallback | Qwen-Drive through `qwendrive_patcher` | [voxel_pool_depth](../benchmarks/voxel_pool_depth/README.md) |
 | BEVPoolV2 | `mu_space.ops.bev_pool_v2` | available for MUSA tensors | PyTorch reference fallback | FlashOcc through `flashocc_patcher` | [bev_pool_v2](../benchmarks/bev_pool_v2/README.md) |
-| deformable aggregation | `mu_space.ops.deformable_aggregation` | available for MUSA tensors | PyTorch reference fallback | SparseDrive runtime patcher | [deformable_aggregation](../benchmarks/deformable_aggregation/README.md) |
+| deformable aggregation | `mu_space.ops.deformable_aggregation` | available for MUSA tensors | PyTorch reference fallback | SparseDrive and Sparse4D runtime patchers | [deformable_aggregation](../benchmarks/deformable_aggregation/README.md) |
 | modulated deformable conv (DCNv2) | `mu_space.ops.modulated_deform_conv2d` | required, MUSA only | test-only golden model | BEVFormer ResNet-DCN runtime patcher | [dcnv2](../benchmarks/dcnv2/README.md) |
 | standard deformable conv (DCN) | `mu_space.ops.DeformConv2d` / `DeformConv2dPack` | required, MUSA native via mask=1 | mmcv-compatible reference surface | BEVDepth `DCN` registry patcher | [deform_conv](../benchmarks/deform_conv/README.md) |
 | FlashBEV pooling | `mu_space.ops.flash_bevpool` | available for MUSA tensors | PyTorch reference fallback | standalone operator API | [flashbev](../benchmarks/flashbev/README.md) |
 | FlashSCA pooling | `mu_space.ops.flash_bevpool_sca` | available for MUSA tensors | PyTorch reference fallback | standalone operator API | [flashbev](../benchmarks/flashbev/README.md) |
+| grid sample | `mu_space.ops.grid_sample` | forward/backward kernel for MUSA FP32/FP16/BF16 tensors | PyTorch `torch.nn.functional.grid_sample` | standalone operator API | [grid_sample](../benchmarks/grid_sample/README.md) |
+| temporal alignment | `mu_space.ops.temporal_align` | forward gather and atomic backward scatter for MUSA FP32/FP16/BF16 tensors, plus an exact integer-shift copy | torchvision `rotate` per-sample loop reference | standalone operator API | [temporal_align](../benchmarks/temporal_align/README.md) |
 | sigmoid focal loss | `mu_space.ops.sigmoid_focal_loss` | available for MUSA tensors | PyTorch BCE-with-logits reference fallback | BEVFusion source patch recipe | [sigmoid_focal_loss](../benchmarks/sigmoid_focal_loss/README.md) |
 | BEVFusion SparseEncoder spconv | `mu_space.ops.spconv` / legacy `sparse_conv_ext` shim | 3-D SubM/SparseConv FP32/FP16 forward and backward | PyTorch reference implementation | BEVFusion LiDAR SparseEncoder | [spconv](../benchmarks/spconv/README.md) |
 | BEVFusion BEV IoU/NMS | `mu_space.ops.boxes_iou_bev`, `nms_bev`, `nms_bev_normal` | available for MUSA tensors | independent polygon/NMS reference | source patch or BEVFusion iou3d patcher | [boxes_iou_bev](../benchmarks/boxes_iou_bev/README.md) |
@@ -48,6 +50,27 @@ Measured BF16 alignment: against the PyTorch reference evaluated in FP32, the na
 backward stay within 3.1e-3 of the peak magnitude at the published MSDA shape (2,40000,8,32),
 and the FP32 control stays within 5e-7. Evaluating that reference in BF16 instead drifts by up
 to 1.7 there, because it builds its sampling grid in the storage dtype.
+
+## Grid sampling
+
+`grid_sample(input, grid, mode="bilinear", padding_mode="zeros", align_corners=False,
+backend="auto")` accepts NCHW input with grid `[N, H_out, W_out, 2]` or NCDHW input with
+grid `[N, D_out, H_out, W_out, 3]`. Grid components are normalized coordinates in x/y/z order.
+For 3-D input, `bilinear` means trilinear interpolation. `nearest`, `border` and `reflection`
+are also supported; bicubic interpolation is not supported.
+
+Input and grid must have matching device and dtype (FP32, FP16 or BF16). Noncontiguous tensors
+are copied to contiguous storage. Empty batches, channels and output dimensions are supported;
+input spatial dimensions must be positive. The native path computes coordinates, weights and
+gradient accumulation in FP32, then returns output and gradients in the input dtype. Input
+gradients use atomic accumulation and can differ by floating-point rounding across runs.
+Nearest interpolation returns zero grid gradients. Only first-order derivatives are supported.
+The backward kernel keeps one thread per output location so grid gradients accumulate in channel
+order. CPU 2-D backward groups pixel differences differently, so strict FP32 agreement with CPU
+is not guaranteed for cancellation-sensitive reductions.
+
+Use `backend="musa"` to require the native implementation without fallback, or `backend="reference"`
+to call PyTorch. CPU FP16/BF16 reference calls compute in FP32 and cast the result back.
 
 ## Depth-aware voxel pooling
 

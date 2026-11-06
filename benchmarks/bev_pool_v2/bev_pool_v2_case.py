@@ -34,8 +34,8 @@ def make_case(seed: int = DEFAULT_SEED) -> dict:
     generator = torch.Generator(device="cpu").manual_seed(seed)
     depth = torch.rand(_DEPTH_SHAPE, generator=generator)
     feat = torch.rand(_FEAT_SHAPE, generator=generator)
-    # A depth logit is sampled at most once by the projection. Keeping this
-    # invariant avoids a write race in grad_depth on every native backend.
+    # Sample each depth logit at most once to match the upstream r50-ish
+    # projection; native backward also supports repeated depth ranks.
     ranks_depth = torch.randperm(depth.numel(), generator=generator, dtype=torch.int32)[:_POINTS]
     ranks_feat = torch.randint(
         _FEAT_SHAPE[0] * _FEAT_SHAPE[1] * _FEAT_SHAPE[2] * _FEAT_SHAPE[3],

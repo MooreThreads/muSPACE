@@ -367,3 +367,66 @@ def explain_dispatch(
     return _explain_dispatch(
         value, backend=backend, native_available=_native_extension() is not None
     )
+
+
+def build_msda_autograd_function(
+    *,
+    fp16: bool = False,
+    backend: str = "auto",
+) -> type:
+    """Build a drop-in replacement for OpenMMLab's MSDA autograd entry.
+
+    The entry keeps the ``apply`` contract legacy modules expect and forwards to
+    the canonical muSPACE operator, which registers its own autograd node.
+    ``fp16`` narrows the operands first, as the upstream fp16 entry does.
+    """
+
+    class MultiScaleDeformableAttnFunction:
+        @staticmethod
+        def forward(
+            value: torch.Tensor,
+            value_spatial_shapes: torch.Tensor,
+            value_level_start_index: torch.Tensor,
+            sampling_locations: torch.Tensor,
+            attention_weights: torch.Tensor,
+            im2col_step: int = 64,
+        ) -> torch.Tensor:
+            if fp16 and value.dtype != torch.float16:
+                value = value.half()
+                sampling_locations = sampling_locations.half()
+                attention_weights = attention_weights.half()
+            return multi_scale_deformable_attn(
+                value,
+                value_spatial_shapes,
+                value_level_start_index,
+                sampling_locations,
+                attention_weights,
+                im2col_step=int(im2col_step),
+                backend=backend,
+            )
+
+        @staticmethod
+        def apply(
+            value: torch.Tensor,
+            value_spatial_shapes: torch.Tensor,
+            value_level_start_index: torch.Tensor,
+            sampling_locations: torch.Tensor,
+            attention_weights: torch.Tensor,
+            im2col_step: int = 64,
+        ) -> torch.Tensor:
+            return MultiScaleDeformableAttnFunction.forward(
+                value,
+                value_spatial_shapes,
+                value_level_start_index,
+                sampling_locations,
+                attention_weights,
+                im2col_step,
+            )
+
+    MultiScaleDeformableAttnFunction.__name__ = (
+        "MultiScaleDeformableAttnFunction_fp16"
+        if fp16
+        else "MultiScaleDeformableAttnFunction_fp32"
+    )
+    MultiScaleDeformableAttnFunction.__module__ = __name__
+    return MultiScaleDeformableAttnFunction

@@ -111,6 +111,16 @@ include = ["mu_space*"]
     "model_examples/UniAD/patches/uniad-10-panseg-assigner-device.patch",
     "model_examples/UniAD/patches/uniad-11-remove-debug-imports.patch",
 ]
+"share/mu-space/model_examples/VAD" = [
+    "model_examples/VAD/manifest.yaml",
+    "model_examples/VAD/requirements.lock",
+]
+"share/mu-space/model_examples/VAD/patches" = [
+    "model_examples/VAD/patches/deps-mmcv-1.7.0-lazy-ext.patch",
+    "model_examples/VAD/patches/vad-01-lazy-metrics-import.patch",
+    "model_examples/VAD/patches/vad-02-points-in-boxes-fallback.patch",
+    "model_examples/VAD/patches/vad-03-grid-mask-device-placement.patch",
+]
 "share/mu-space/model_examples/Sparse4D" = [
     "model_examples/Sparse4D/manifest.yaml",
     "model_examples/Sparse4D/requirements.lock",

@@ -39,6 +39,19 @@ UNIAD_IMPORTED_MODULES = (
     "projects.mmdet3d_plugin.uniad.modules.temporal_self_attention",
     "projects.mmdet3d_plugin.uniad.dense_heads.motion_head_plugin.motion_deformable_attn",
 )
+VAD_IMPORTED_MODULES = (
+    "projects.mmdet3d_plugin.VAD.modules.multi_scale_deformable_attn_function",
+    "projects.mmdet3d_plugin.VAD.modules.spatial_cross_attention",
+    "projects.mmdet3d_plugin.VAD.modules.temporal_self_attention",
+    "projects.mmdet3d_plugin.VAD.modules.decoder",
+    "projects.mmdet3d_plugin.VAD.modules.encoder",
+)
+# Legacy call sites also call these autograd entries directly.
+MSDA_FUNCTION_ATTRS = (
+    "MultiScaleDeformableAttnFunction",
+    "MultiScaleDeformableAttnFunction_fp32",
+    "MultiScaleDeformableAttnFunction_fp16",
+)
 FLASHOCC_IMPORTED_MODULES = (
     "projects.mmdet3d_plugin.models.necks.view_transformer",
     "projects.mmdet3d_plugin.ops.bev_pool_v2",
@@ -439,6 +452,18 @@ def _make_msda_wrapper(strict: bool) -> PatchCallable:
     return compat_msda
 
 
+def _make_msda_function_replacements(strict: bool) -> dict[str, type]:
+    """Build drop-in MSDA autograd entries for legacy ``.apply`` call sites."""
+
+    from mu_space.ops import build_msda_autograd_function
+
+    backend = "musa" if strict else "auto"
+    return {
+        attr: build_msda_autograd_function(fp16=attr.endswith("_fp16"), backend=backend)
+        for attr in MSDA_FUNCTION_ATTRS
+    }
+
+
 def _make_bev_pool_v2_wrapper(strict: bool) -> PatchCallable:
     backend = "musa" if strict else "auto"
 
@@ -585,7 +610,8 @@ class DefaultPatcher:
     def apply(self, *, strict: bool | None = None) -> PatchReport:
         strict = _env_strict() if strict is None else strict
         wrapper = _make_msda_wrapper(strict)
-        patched_modules = self._patch_mmcv_msda(wrapper)
+        functions = _make_msda_function_replacements(strict)
+        patched_modules = self._patch_mmcv_msda(wrapper, functions)
         action = "already-applied" if self._strict == strict else "applied"
         self._strict = strict
         return PatchReport(
@@ -611,7 +637,11 @@ class DefaultPatcher:
     def _patch_attr(self, module: ModuleType, attr: str, replacement: object) -> bool:
         return _patch_attr(self._originals, module, attr, replacement)
 
-    def _patch_mmcv_msda(self, replacement: PatchCallable) -> list[str]:
+    def _patch_mmcv_msda(
+        self,
+        replacement: PatchCallable,
+        functions: dict[str, type],
+    ) -> list[str]:
         self._guarded = _guard_legacy_mmcv_extensions() or self._guarded
         try:
             target = importlib.import_module(MSDA_TARGET_MODULE)
@@ -627,12 +657,24 @@ class DefaultPatcher:
         else:
             raise PatchError(f"{MSDA_TARGET_MODULE}.{MSDA_TARGET_ATTR} is unavailable")
 
-        # Models bind this helper at import time. Update loaded globals as well
-        # so MUSA tensors use muSPACE instead of the framework fallback.
+        # Legacy modules call the helper function, the autograd entries, or both.
+        # Models bind them at import time, so update loaded globals as well.
         for module_name in (*BEVFORMER_IMPORTED_MODULES, *UNIAD_IMPORTED_MODULES):
             module = sys.modules.get(module_name)
             if module is not None and self._patch_attr(module, MSDA_TARGET_ATTR, replacement):
                 patched.append(module_name)
+        for module_name in VAD_IMPORTED_MODULES:
+            module = sys.modules.get(module_name)
+            if module is None:
+                continue
+            rebound = self._patch_attr(module, MSDA_TARGET_ATTR, replacement)
+            for attr, value in functions.items():
+                rebound = self._patch_attr(module, attr, value) or rebound
+            if rebound:
+                patched.append(module_name)
+        # mmcv exposes the autograd entry next to the helper it replaces.
+        for attr, value in functions.items():
+            self._patch_attr(target, attr, value)
         return patched
 
 

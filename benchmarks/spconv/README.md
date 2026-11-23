@@ -116,8 +116,11 @@ reported in the table.
   it does not change the timed region or the published latency.
 - The `float32` rows run the operator's default float32 sparse GEMM precision, which uses the
   reduced-precision tensor-core path on the measured device; `MUSPACE_SPCONV_FP32_TF32=0` forces
-  strict IEEE float32 and changes the latency. Prefer the `float32` rows when claiming numerical
-  alignment, and read the `float16` row as latency only.
+  strict IEEE float32 and changes the latency. The default is an accuracy trade-off: TF32 keeps
+  ten mantissa bits, so accuracy gates against a strict CPU reference must either measure with
+  `MUSPACE_SPCONV_FP32_TF32=0` or allow a TF32-sized tolerance (`rtol 5e-3` covers the measured
+  corpus). Prefer the strict mode when claiming numerical alignment, and read the `float16` row as
+  latency only.
 - The scatter-add stage accumulates contributions of several kernel offsets into one output with
   atomics, so neither the forward nor the backward pass of this operator is bit-reproducible
   across runs. A re-measurement therefore reproduces within a band, not exactly.

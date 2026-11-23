@@ -22,6 +22,7 @@ from .modulated_deform_conv import (
 )
 from .deform_conv import DeformConv2d, DeformConv2dPack
 from .multi_scale_deformable_attn import (
+    build_msda_autograd_function,
     explain_dispatch,
     multi_scale_deformable_attn,
     multi_scale_deformable_attn_pytorch_compat,
@@ -46,7 +47,16 @@ from .hard_voxelize import (
 )
 from .voxel_pooling_train import voxel_pooling_train, voxel_pooling_train_reference
 from .voxel_pool_depth import voxel_pool_depth, voxel_pool_depth_reference
-from .points_in_boxes_all import points_in_boxes_all, points_in_boxes_all_reference
+from .points_in_boxes_all import (
+    points_in_boxes_all,
+    points_in_boxes_all_reference,
+    points_in_boxes_batch,
+    points_in_boxes_batch_reference,
+    points_in_boxes_cpu,
+    points_in_boxes_cpu_reference,
+    points_in_boxes_gpu,
+    points_in_boxes_gpu_reference,
+)
 from .radius import radius, radius_graph, radius_graph_reference, radius_reference
 
 __all__ = [
@@ -98,6 +108,12 @@ __all__ = [
     "voxel_pool_depth_reference",
     "points_in_boxes_all",
     "points_in_boxes_all_reference",
+    "points_in_boxes_batch",
+    "points_in_boxes_batch_reference",
+    "points_in_boxes_cpu",
+    "points_in_boxes_cpu_reference",
+    "points_in_boxes_gpu",
+    "points_in_boxes_gpu_reference",
     "radius",
     "radius_graph",
     "radius_reference",

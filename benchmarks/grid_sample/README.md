@@ -7,6 +7,11 @@ allocation overhead. The forward cases time the forward call with autograd enabl
 cases clear existing gradients, run the forward call, form `output.square().sum()`, and execute its
 autograd backward pass. Tensor construction and device transfer are outside the timed region.
 
+No case feeds NaN or infinite grid coordinates. The `reference` backend calls PyTorch's CPU
+`grid_sample`, whose backward can crash the process (SIGSEGV, not a catchable exception) for
+`padding_mode="reflection"` with `align_corners=True` and a non-finite grid; the MUSA kernels do
+not. Accuracy runs that compare against the reference backend must validate the grid first.
+
 ## Cases
 
 | Case | Input | Grid | dtype | Mode | Padding | `align_corners` | Seed |

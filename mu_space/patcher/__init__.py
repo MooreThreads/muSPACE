@@ -12,6 +12,7 @@ from .migration import (
     restore_bevformer,
     restore_recipe,
 )
+from .orion_patcher import OrionPatchReport, OrionPatcher, orion_patcher
 from .runtime import (
     BEVFusionPatcher,
     BEVDepthPatcher,
@@ -47,6 +48,8 @@ __all__ = [
     "MigrationReport",
     "ModulatedDeformConv2dPatcher",
     "DeformConv2dPatcher",
+    "OrionPatchReport",
+    "OrionPatcher",
     "PatchError",
     "PatchReport",
     "QwenDrivePatcher",
@@ -56,6 +59,7 @@ __all__ = [
     "bevfusion_patcher",
     "bevdepth_patcher",
     "default_patcher",
+    "orion_patcher",
     "bevfusion_iou3d_patcher",
     "flashocc_patcher",
     "inspect_bevformer",

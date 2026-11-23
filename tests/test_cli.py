@@ -22,6 +22,7 @@ ALL_RECIPES = (
     "qwendrive",
     "sparsedrive",
     "uniad",
+    "vad",
 )
 # SparseDrive and Qwen-Drive are integrated by runtime patchers and ship no checkout patches.
 RECIPES = (
@@ -33,6 +34,7 @@ RECIPES = (
     "openvla",
     "qcnet",
     "uniad",
+    "vad",
 )
 
 

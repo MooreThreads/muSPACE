@@ -1,0 +1,71 @@
+diff --git a/mmcv/utils/ext_loader.py b/mmcv/utils/ext_loader.py
+index 971d3d9..85cd76c 100644
+--- a/mmcv/utils/ext_loader.py
++++ b/mmcv/utils/ext_loader.py
+@@ -1,4 +1,13 @@
+ # Copyright (c) OpenMMLab. All rights reserved.
++"""Lazy loader for the compiled ``mmcv._ext`` extension.
++
++The vendored mmcv imports every ops module that needs the compiled extension at
++package import time, so a missing ``mmcv._ext`` aborts ``import mmcv`` even when
++the model never calls those ops. ``load_ext`` therefore resolves lazily: it
++returns a stand-in module whose attributes raise a descriptive error only when a
++kernel is actually invoked. Callers that route an op to a muSPACE replacement
++never trigger it.
++"""
+ import importlib
+ import os
+ import pkgutil
+@@ -7,12 +16,50 @@ from collections import namedtuple
+ 
+ import torch
+ 
++
++class MissingExtension:
++    """Placeholder for an unavailable compiled extension module.
++
++    Attribute access returns a callable that raises :class:`RuntimeError` naming
++    the missing kernel, so ``hasattr`` probes still succeed but a real call fails
++    with an actionable message instead of an ``ImportError`` at import time.
++    """
++
++    def __init__(self, name):
++        self._name = name
++
++    def __repr__(self):
++        return f'<MissingExtension {self._name!r}>'
++
++    def __getattr__(self, attr):
++        if attr.startswith('__') and attr.endswith('__'):
++            raise AttributeError(attr)
++
++        def unavailable(*args, **kwargs):
++            raise RuntimeError(
++                f'mmcv.{self._name}.{attr} is unavailable: the compiled mmcv extension '
++                f'is not built for this platform. Route this operator through a '
++                f'muSPACE replacement (for example mu_space.patcher.orion_patcher) '
++                f'before calling it.'
++            )
++
++        unavailable.__name__ = attr
++        return unavailable
++
++
+ def load_ext(name, funcs):
+-    ext = importlib.import_module('mmcv.' + name)
++    try:
++        ext = importlib.import_module('mmcv.' + name)
++    except ModuleNotFoundError:
++        return MissingExtension(name)
+     for fun in funcs:
+         assert hasattr(ext, fun), f'{fun} miss in module {name}'
+     return ext
+ 
++
+ def check_ops_exist():
+-    ext_loader = pkgutil.find_loader('mmcv._ext')
++    try:
++        ext_loader = pkgutil.find_loader('mmcv._ext')
++    except ValueError:
++        return False
+     return ext_loader is not None

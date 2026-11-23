@@ -96,7 +96,10 @@ Correctness is the precondition and is established by the operator tests:
 `PYTHONPATH=. python -m pytest tests/ops/test_boxes_iou_bev.py -q` passes on the measured build.
 For `boxes_iou_bev` the native IoU matrix stays within `rtol 1e-4` and `atol 1e-5` of the
 independent CPU polygon-clipping reference; both NMS entry points return exactly the reference keep
-indices, including across mask block boundaries.
+indices, including across mask block boundaries. The native overlap has no hidden coordinate
+window: the containment tolerance scales with the box half-extents, so an identical box pair keeps
+IoU 1.0 at any finite coordinate (`±256` and beyond included) and duplicate detections stay
+suppressible.
 
 The pass criterion for a published row is reproducibility: re-running the documented command with
 the default protocol reproduces the published S5000 p50 within 5% on the measured device. Each row

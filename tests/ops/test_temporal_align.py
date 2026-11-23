@@ -561,3 +561,74 @@ def test_planar_gradient_matches_packed_layout():
     packed_grad = torch.autograd.grad(packed_out, packed_device, packed_weight)[0]
     restored = packed_grad.cpu().reshape(2, 37, 6, 5).permute(0, 3, 1, 2)
     torch.testing.assert_close(planar_grad.cpu(), restored, rtol=1e-5, atol=1e-5)
+
+
+# --- regressions ------------------------------------------------------------
+
+
+def test_reference_integer_shift_out_of_bounds_keeps_the_autograd_graph():
+    """A window that falls outside the plane is legal and has a zero
+    gradient, but the reference used to return a detached ``zeros_like`` and the
+    backward pass failed with "does not require grad and does not have a grad_fn"."""
+    bev = _bev(1, 2, 5, 6).requires_grad_(True)
+    shift = torch.tensor([[500, 0]], dtype=torch.int32)
+    output = temporal_align_reference(bev, shift=shift)
+    assert output.grad_fn is not None
+    (gradient,) = torch.autograd.grad(output.sum(), bev)
+    assert torch.count_nonzero(gradient) == 0
+
+
+@pytest.mark.parametrize(
+    ("angle", "shift"),
+    [
+        (torch.tensor([math.inf]), None),
+        (torch.tensor([-math.inf]), None),
+        (torch.tensor([math.nan]), None),
+        (None, torch.tensor([[math.inf, 0.0]])),
+        (None, torch.tensor([[0.0, math.nan]])),
+    ],
+)
+def test_validation_rejects_non_finite_geometry(angle, shift):
+    """Non-finite angle or shift is rejected with a message instead of
+    raising ``math domain error`` from ``math.cos`` inside the reference."""
+    bev = _bev(1, 2, 4, 4)
+    with pytest.raises(ValueError, match="finite"):
+        temporal_align_reference(bev, angle, shift, bev_h=4, bev_w=4)
+
+
+@MUSA_REQUIRED
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("shift", [(1.5, -1.5), (0.5, 0.5), (-2.5, 3.5)])
+@pytest.mark.parametrize("angle", [0.0, 45.0, 90.0])
+def test_native_nearest_half_pixel_ties_follow_the_reference(dtype, shift, angle):
+    """A sample that lands on a half pixel must pick the same tap as
+    ``F.grid_sample``. The reference reaches the pixel index through a float32
+    normalise/unnormalise round trip, so the kernel has to reproduce it."""
+    bev = _bev(1, 2, 64, 64, dtype)
+    angle_tensor = torch.full((1,), angle, dtype=torch.float32)
+    shift_tensor = torch.tensor([shift], dtype=torch.float32)
+    expected = temporal_align_reference(
+        bev.float(), angle_tensor, shift_tensor, bev_h=64, bev_w=64, mode="nearest"
+    ).to(dtype)
+
+    source = bev.musa().requires_grad_(True)
+    actual = temporal_align(
+        source,
+        angle_tensor.musa(),
+        shift_tensor.musa(),
+        bev_h=64,
+        bev_w=64,
+        mode="nearest",
+        backend="musa",
+    )
+    assert torch.equal(actual.cpu(), expected)
+    assert get_last_dispatch_report().selected_backend == "musa"
+
+    weight = torch.ones_like(expected)
+    gradient = torch.autograd.grad(actual, source, weight.musa())[0]
+    reference_source = bev.clone().requires_grad_(True)
+    reference_output = temporal_align_reference(
+        reference_source.float(), angle_tensor, shift_tensor, bev_h=64, bev_w=64, mode="nearest"
+    ).to(dtype)
+    (reference_gradient,) = torch.autograd.grad(reference_output, reference_source, weight)
+    assert torch.equal(gradient.cpu(), reference_gradient)

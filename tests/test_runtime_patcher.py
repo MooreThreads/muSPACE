@@ -20,7 +20,12 @@ TARGET = "mmcv.ops.multi_scale_deform_attn"
 ATTR = "multi_scale_deformable_attn_pytorch"
 IMPORTED = "projects.mmdet3d_plugin.bevformer.modules.temporal_self_attention"
 UNIAD_IMPORTED = "projects.mmdet3d_plugin.uniad.modules.temporal_self_attention"
+VAD_IMPORTED = "projects.mmdet3d_plugin.VAD.modules.spatial_cross_attention"
 EXT_LOADER = "mmcv.utils.ext_loader"
+VAD_FUNCTION_ATTRS = (
+    "MultiScaleDeformableAttnFunction_fp32",
+    "MultiScaleDeformableAttnFunction_fp16",
+)
 
 
 def _install_fake_module(monkeypatch, name: str):
@@ -84,6 +89,32 @@ def test_default_patcher_updates_already_imported_uniad_modules(monkeypatch):
     assert report.patched_modules == (TARGET, UNIAD_IMPORTED)
     assert getattr(module, ATTR) is getattr(imported, ATTR)
     assert getattr(imported, ATTR) is not imported_original
+
+
+def test_default_patcher_rebinds_vad_msda_autograd_functions(monkeypatch):
+    module, _ = _install_fake_module(monkeypatch, TARGET)
+    vad = types.ModuleType(VAD_IMPORTED)
+
+    def original(*args, **kwargs):
+        return "original"
+
+    setattr(vad, ATTR, original)
+    for attr in VAD_FUNCTION_ATTRS:
+        setattr(vad, attr, original)
+    monkeypatch.setitem(sys.modules, VAD_IMPORTED, vad)
+    patcher = DefaultPatcher()
+
+    report = patcher.apply()
+
+    assert VAD_IMPORTED in report.patched_modules
+    assert getattr(vad, ATTR) is getattr(module, ATTR)
+    for attr in VAD_FUNCTION_ATTRS:
+        assert getattr(vad, attr) is not original
+
+    patcher.restore()
+    assert getattr(vad, ATTR) is original
+    for attr in VAD_FUNCTION_ATTRS:
+        assert getattr(vad, attr) is original
 
 
 def test_default_patcher_strict_mode_from_env(monkeypatch):

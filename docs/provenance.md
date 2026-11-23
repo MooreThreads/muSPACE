@@ -102,6 +102,13 @@ caching allocator; the variable-length result still requires synchronization and
 reduction to preserve the upstream return contract. The standalone benchmark measures only the
 mask kernel and does not include that wrapper path.
 
+The kernel's containment test compares a rotated corner inside the box's own frame with a
+tolerance that scales with the box half-extents, so the operator has no undocumented coordinate
+window: an identical box pair keeps IoU 1.0 at any finite coordinate. Earlier revisions used an
+absolute `1e-5` margin, which stopped doing its job once `ulp(coordinate) / 2` exceeded it and
+returned IoU 0 for identical boxes at `|x| >= 256`, silently disabling duplicate suppression in
+NMS.
+
 | Pinned upstream source | muSPACE destination | Role |
 | --- | --- | --- |
 | `mmdet3d/ops/iou3d/iou3d_utils.py` | `mu_space/ops/boxes_iou_bev.py` | Python API and dispatch compatibility |
@@ -113,6 +120,11 @@ Source URLs are pinned to
 The upstream implementation is derived from OpenPCDet's iou3d NMS kernels. The BEVFusion
 repository and its inherited source notices are the provenance baseline; muSPACE remains
 Apache-2.0 and retains only the MUSA port and compatibility layer.
+
+`tests/ops/upstream_iou3d_reference.py` transcribes `iou3d.cpp`, `iou3d_kernel.cu`, and
+`iou3d_utils.py` line by line so the semantic diff tests can compare against the upstream
+algorithm without the CUDA extension. The transcription is test-only and is not part of the
+public package surface.
 
 ## BEVPoolV2
 
@@ -287,6 +299,15 @@ The operator contract follows BEVFusion's `spconv` bindings (Apache-2.0), which 
 PyTorch extension source from upstream. FP32 GEMMs run in TF32 by default; set
 `MUSPACE_SPCONV_FP32_TF32=0` to force strict IEEE float32.
 
+TF32 is an accuracy contract, not a rounding detail: the tensor-core product keeps ten mantissa
+bits, so a float32 caller that expects strict IEEE float32 sees differences around `1e-3` relative,
+and far larger ratios wherever the exact sum cancels to near zero. Accuracy gates that compare
+against a strict CPU reference must either run with `MUSPACE_SPCONV_FP32_TF32=0` or allow a
+TF32-sized tolerance. The SubM centre offset is summed as `features @ filters[centre]` only when
+that offset's rulebook is the identity on both sides (row `i` to output row `i`); duplicate input
+coordinates keep one rulebook pair per distinct coordinate, so they fall back to the pair-based sum
+and the CPU reference and the MUSA kernels stay identical.
+
 ## Hard and dynamic voxelization
 
 `mu_space.ops.hard_voxelize` implements the OpenMMLab mmdetection3d `Voxelization` contract
@@ -302,6 +323,17 @@ neighbouring bin compared with CUDA.
 BEVFusion Depth path, replacing `points_in_boxes_batch` from BEVFusion/mmdetection3d
 (Apache-2.0). The MUSA kernel in `csrc/geometry/points_in_boxes_all_musa.mu` is a local
 implementation with its own PyTorch reference path.
+
+The `points_in_boxes_gpu`, `points_in_boxes_batch`, and `points_in_boxes_cpu` adapters keep the
+upstream argument order and return contracts (`points, boxes`; first-hit index with `-1`
+background, batch mask, and the unbatched `[M, npoints]` CPU mask) on top of the same kernel. They
+follow the upstream `roiaware_pool3d` point-in-box entry points, which mmdetection3d and
+BEVFusion carry as Apache-2.0 code.
+
+| Pinned upstream source | muSPACE destination | Role |
+| --- | --- | --- |
+| `mmdet3d/ops/roiaware_pool3d/points_in_boxes.py` | `mu_space/ops/points_in_boxes_all.py` | Python API and dispatch compatibility for the `gpu`/`cpu`/`batch` adapters |
+| `mmdet3d/ops/roiaware_pool3d/src/points_in_boxes_cuda.cu` | `csrc/geometry/points_in_boxes_all_musa.mu` | Point-in-box predicate and mask kernel lineage |
 
 ## CenterPoint target assignment
 
@@ -334,10 +366,22 @@ fast path are local additions with no upstream counterpart.
 
 Deliberate differences from the upstream loop:
 
-- Quarter turns snap to exact sine and cosine values. Float32 argument reduction moves the cosine
-  of a right angle by about 4e-8, which is enough to send a nearest-neighbour sample that sits on
-  an exact half pixel to the other side; the snap makes the native nearest path reproduce the
-  torchvision result bit for bit at those angles.
+- Quarter turns snap to exact sine and cosine values; every other angle evaluates its sine and
+  cosine in double precision and only then rounds to float32, which is what the Python reference
+  does when it hands a double scalar to a float32 tensor op. A float32 `sin`/`cos` can be one ulp
+  away, and one ulp of sine times a 183-pixel offset is enough to move a nearest-neighbour sample
+  that sits on an exact half pixel to the other side of the tie.
+- The nearest-neighbour tap is chosen the way `F.grid_sample` chooses it: the source position is
+  normalised to grid space and unnormalised again in float32, and the integer index is
+  `nearbyint` of that value. Reproducing the double rounding is what makes half-pixel ties pick
+  the same tap as the reference; sampling the exact source position rounds to even instead.
+- A non-finite `angle` or float `shift` is rejected with a `ValueError` when the geometry tensor
+  lives on the host. The reference path runs on the host, so it raises instead of reaching
+  `math.cos(inf)` and failing with `math domain error`. A device tensor is deliberately not
+  scanned: a finiteness reduction on the device costs a synchronization plus a kernel launch per
+  call, which is about as expensive as the forward pass itself. The native path therefore
+  documents non-finite geometry as undefined and samples no tap instead of rounding an undefined
+  coordinate.
 - The backward pass scatters gradients with atomic accumulation, so repeated runs can differ in
   the last bits. Only first-order derivatives with respect to the BEV plane are supported; the
   rotation angle and the translation are inputs, not differentiable parameters.

@@ -2,7 +2,7 @@
 
 | Operator | Canonical API | MUSA native | Reference | Model integration | Benchmark |
 |---|---:|---:|---:|---:|---|
-| multi-scale deformable attention | `mu_space.ops.multi_scale_deformable_attn` | available for MUSA FP32/BF16/FP16 tensors | PyTorch reference fallback | BEVFormer and UniAD through `default_patcher`; Qwen-Drive through `qwendrive_patcher` | [msda](../benchmarks/msda/README.md) |
+| multi-scale deformable attention | `mu_space.ops.multi_scale_deformable_attn` | available for MUSA FP32/BF16/FP16 tensors | PyTorch reference fallback | BEVFormer, UniAD and VAD through `default_patcher`; Qwen-Drive through `qwendrive_patcher` | [msda](../benchmarks/msda/README.md) |
 | BEVPool | `mu_space.ops.bev_pool` | available for MUSA tensors | PyTorch reference fallback | BEVFusion runtime patcher | [bev_pool](../benchmarks/bev_pool/README.md) |
 | BEVDepth voxel pooling (train) | `mu_space.ops.voxel_pooling_train` | available for MUSA tensors | PyTorch reference fallback | BEVDepth runtime patcher | [voxel_pooling_train](../benchmarks/voxel_pooling_train/README.md) |
 | Depth-aware voxel pooling | `mu_space.ops.voxel_pool_depth` | FP32/FP16/BF16 forward and backward for MUSA tensors | PyTorch reference fallback | Qwen-Drive through `qwendrive_patcher` | [voxel_pool_depth](../benchmarks/voxel_pool_depth/README.md) |
@@ -13,12 +13,12 @@
 | FlashBEV pooling | `mu_space.ops.flash_bevpool` | available for MUSA tensors | PyTorch reference fallback | standalone operator API | [flashbev](../benchmarks/flashbev/README.md) |
 | FlashSCA pooling | `mu_space.ops.flash_bevpool_sca` | available for MUSA tensors | PyTorch reference fallback | standalone operator API | [flashbev](../benchmarks/flashbev/README.md) |
 | grid sample | `mu_space.ops.grid_sample` | forward/backward kernel for MUSA FP32/FP16/BF16 tensors | PyTorch `torch.nn.functional.grid_sample` | standalone operator API | [grid_sample](../benchmarks/grid_sample/README.md) |
-| temporal alignment | `mu_space.ops.temporal_align` | forward gather and atomic backward scatter for MUSA FP32/FP16/BF16 tensors, plus an exact integer-shift copy | torchvision `rotate` per-sample loop reference | standalone operator API | [temporal_align](../benchmarks/temporal_align/README.md) |
+| temporal alignment | `mu_space.ops.temporal_align` | forward gather and atomic backward scatter for MUSA FP32/FP16/BF16 tensors, plus an exact integer-shift copy; nearest taps follow PyTorch `F.grid_sample`, including half-pixel ties | torchvision `rotate` per-sample loop reference | standalone operator API | [temporal_align](../benchmarks/temporal_align/README.md) |
 | sigmoid focal loss | `mu_space.ops.sigmoid_focal_loss` | available for MUSA tensors | PyTorch BCE-with-logits reference fallback | BEVFusion source patch recipe | [sigmoid_focal_loss](../benchmarks/sigmoid_focal_loss/README.md) |
 | BEVFusion SparseEncoder spconv | `mu_space.ops.spconv` / legacy `sparse_conv_ext` shim | 3-D SubM/SparseConv FP32/FP16 forward and backward | PyTorch reference implementation | BEVFusion LiDAR SparseEncoder | [spconv](../benchmarks/spconv/README.md) |
-| BEVFusion BEV IoU/NMS | `mu_space.ops.boxes_iou_bev`, `nms_bev`, `nms_bev_normal` | available for MUSA tensors | independent polygon/NMS reference | source patch or BEVFusion iou3d patcher | [boxes_iou_bev](../benchmarks/boxes_iou_bev/README.md) |
+| BEVFusion BEV IoU/NMS | `mu_space.ops.boxes_iou_bev`, `nms_bev`, `nms_bev_normal` | available for MUSA tensors; no documented coordinate window (the containment tolerance scales with the box) | independent polygon/NMS reference | source patch or BEVFusion iou3d patcher | [boxes_iou_bev](../benchmarks/boxes_iou_bev/README.md) |
 | Hard voxelize | `mu_space.ops.hard_voxelize` / `Voxelization` | available for MUSA tensors | PyTorch reference fallback | mmdet3d/BEVFusion compatibility patch | [hard_voxelize](../benchmarks/hard_voxelize/README.md) |
-| points in rotated 3-D boxes | `mu_space.ops.points_in_boxes_all` | available for MUSA tensors | PyTorch reference fallback | BEVFusion Depth batch point-in-box path | [points_in_boxes_all](../benchmarks/points_in_boxes_all/README.md) |
+| points in rotated 3-D boxes | `mu_space.ops.points_in_boxes_all`, `points_in_boxes_gpu`, `points_in_boxes_batch`, `points_in_boxes_cpu` | available for MUSA tensors for the mask and index adapters; `points_in_boxes_cpu` is unbatched and reference-only | PyTorch reference fallback | BEVFusion Depth batch point-in-box path | [points_in_boxes_all](../benchmarks/points_in_boxes_all/README.md) |
 | radius neighborhood query | `mu_space.ops.radius`, `radius_graph` | FP32, D < 9, sorted non-negative batches, int32 indexing range | upstream torch-cluster, with `radius_reference`, `radius_graph_reference` as the local fallback | standalone operator API | [radius](../benchmarks/radius/README.md) |
 | QCNet radius integration | `mu_space.qcnet_compat` | native on MUSA tensors | upstream torch-cluster on CUDA/CPU | QCNet recipe | [radius](../benchmarks/radius/README.md) |
 | CenterPoint target assignment | `mu_space.ops.centerpoint_target_assign` | available for MUSA tensors | host-side NumPy loop upstream, no device reference | BEVFusion CenterPoint head training path | [centerpoint_target_assign](../benchmarks/centerpoint_target_assign/README.md) |
@@ -31,6 +31,19 @@ Hard voxelize accepts FP32 points `[N, F]` and emits voxel coordinates in OpenMM
 parallel `deterministic=False` path does not guarantee voxel order. On rare FP32
 voxel-boundary inputs, MUSA division rounding can place a point in a neighboring bin
 compared with CUDA.
+
+## Points in rotated 3-D boxes
+
+`points_in_boxes_all` is the canonical batched mask entry point: `boxes [B, M, 7]` and
+`points [B, N, 3]` in, `[B, N, M]` int32 mask out. Three adapters translate the upstream
+mmdet3d point-in-box contracts onto the same kernel. `points_in_boxes_batch(points, boxes)`
+returns the same mask with the upstream argument order, `points_in_boxes_gpu(points, boxes)`
+reduces it to the `[B, N]` index of the first containing box with `-1` as the background
+value, and the unbatched `points_in_boxes_cpu(points, boxes)` keeps the upstream CPU entry
+point's transposed `[M, npoints]` mask and remains reference-only.
+
+Boxes use the upstream `[x, y, z, w, l, h, ry]` layout with `z` at the bottom center. Local
+`x`/`y` bounds are strict while the `z` bound is inclusive, matching the upstream kernels.
 
 ## Multi-scale deformable attention
 
@@ -72,6 +85,11 @@ is not guaranteed for cancellation-sensitive reductions.
 Use `backend="musa"` to require the native implementation without fallback, or `backend="reference"`
 to call PyTorch. CPU FP16/BF16 reference calls compute in FP32 and cast the result back.
 
+The `reference` backend runs PyTorch's CPU `grid_sample`. That CPU backward can crash the process
+(SIGSEGV, not a catchable exception) for `padding_mode="reflection"` with `align_corners=True` when
+the grid holds NaN or infinite coordinates. The MUSA kernels do not. An accuracy harness that feeds
+non-finite grid coordinates through the reference backend must validate them first.
+
 ## Depth-aware voxel pooling
 
 `voxel_pool_depth` follows the Qwen-Drive-1.0 view-transform contract:
@@ -105,9 +123,18 @@ Environment overrides:
 | --- | --- | --- |
 | `MUSPACE_SPCONV_FP32_TF32` | `1` | Runs the float32 GEMMs of the sparse convolution in TF32. `0` forces strict IEEE float32. |
 
+TF32 is a documented accuracy trade-off, not a rounding detail. The tensor-core product keeps ten
+mantissa bits, so a float32 caller that expects strict IEEE float32 sees differences around `1e-3`
+relative, and far larger ratios wherever the exact sum cancels to near zero. Accuracy gates that
+compare against a strict CPU reference must either set `MUSPACE_SPCONV_FP32_TF32=0` or allow a
+TF32-sized tolerance (`rtol 5e-3` covers the measured corpus); the strict mode is what reproduces
+the CPU reference to fp32 rounding.
+
 The scatter-add stage accumulates contributions from several kernel offsets into the same
 output voxel with atomics, so neither the forward nor the backward pass is bit-reproducible
-across runs.
+across runs. Deterministic single-point non-finite inputs (all-`Inf` filters, one `NaN` feature)
+place their non-finite outputs identically on both paths; mixing `+Inf` and `-Inf` contributions
+makes the placement depend on the accumulation order and is not specified.
 
 ## Modulated Deformable Convolution
 

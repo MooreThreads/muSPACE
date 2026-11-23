@@ -30,6 +30,24 @@ def _empty_ref(tensor: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
     return torch.empty(0, dtype=dtype, device=tensor.device)
 
 
+def _prepare_trig(bev: torch.Tensor, angle: torch.Tensor | None) -> torch.Tensor:
+    """Return the per-sample ``(cosine, sine)`` table the native kernels read.
+
+    The table is built once per call by a one-block kernel that evaluates the
+    trigonometry in double precision, which is what the reference does with Python
+    scalars.  Keeping that fp64 code out of the sampling kernels matters: inlined
+    there it reduced occupancy and cost about 3x on forward and 1.5x on backward.
+    """
+    ext = _native()
+    if ext is None:
+        raise RuntimeError("muSPACE AOT native module is unavailable")
+    trig = torch.empty((bev.shape[0], 2), dtype=torch.float32, device=bev.device)
+    ext.temporal_align_prepare_trig(
+        _empty_ref(bev, torch.float32) if angle is None else angle.contiguous(), trig
+    )
+    return trig
+
+
 def _resolve_plane(bev: torch.Tensor, bev_h: int | None, bev_w: int | None) -> tuple[int, int, int]:
     """Return ``(batch, bev_h, bev_w)`` after checking the accepted layouts."""
     if bev.dim() == 3:
@@ -83,6 +101,12 @@ def _validate(
             raise ValueError("angle must be on the same device as bev")
         if angle.requires_grad:
             raise ValueError("angle and shift are non-trainable inputs")
+        if angle.device.type == "cpu" and not bool(torch.isfinite(angle).all()):
+            # Only scanned on the host: a finiteness reduction on a device tensor
+            # costs a device synchronization plus a tiny kernel per call, which is
+            # about as expensive as the whole forward pass.  The native path
+            # documents non-finite geometry as a NaN-propagating input instead.
+            raise ValueError("angle must contain only finite values")
     if shift is not None:
         if not isinstance(shift, torch.Tensor):
             raise TypeError("shift must be a torch.Tensor")
@@ -96,6 +120,10 @@ def _validate(
             raise ValueError("angle and shift are non-trainable inputs")
         if shift.dtype == torch.int32 and angle is not None:
             raise ValueError("an integer shift cannot be combined with an angle")
+        if shift.dtype == torch.float32 and shift.device.type == "cpu" and not bool(
+            torch.isfinite(shift).all()
+        ):
+            raise ValueError("a float shift must contain only finite values")
     if center is not None:
         if len(center) != 2:
             raise ValueError("center must be a pair of finite coordinates")
@@ -189,7 +217,10 @@ def _reference_plane(
     cosine = 1.0
     sine = 0.0
     if angle is not None:
-        radians = math.radians(float(angle[sample].item()))
+        degrees = float(angle[sample].item())
+        if not math.isfinite(degrees):
+            raise ValueError("angle must contain only finite values")
+        radians = math.radians(degrees)
         cosine = math.cos(radians)
         sine = math.sin(radians)
     offset_x = 0.0
@@ -223,6 +254,14 @@ def _reference_shift(plane: torch.Tensor, offset: tuple[int, int]) -> torch.Tens
         result[:, start_y:stop_y, start_x:stop_x] = plane[
             :, start_y + shift_y : stop_y + shift_y, start_x + shift_x : stop_x + shift_x
         ]
+    else:
+        # A window that falls outside the plane is legal and its gradient is
+        # zero, but a bare ``zeros_like`` detaches the output from ``plane`` and
+        # the backward pass then fails with "does not require grad and does not
+        # have a grad_fn".  Adding the sum of an empty slice keeps the graph at
+        # exactly zero cost; ``plane.sum() * 0`` would turn an infinite input
+        # into NaN.
+        result = result + plane[:0].sum()
     return result
 
 
@@ -270,21 +309,21 @@ def temporal_align_reference(
 
 class _NativeTemporalAlignFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, work, angle, shift, bev_h, bev_w, centre_x, centre_y, mode):
+    def forward(ctx, work, trig, shift, bev_h, bev_w, centre_x, centre_y, mode):
         ext = _native()
         if ext is None:
             raise RuntimeError("muSPACE AOT native module is unavailable")
         output = torch.empty_like(work)
         ext.temporal_align_forward(
-            work, angle, shift, output, bev_h, bev_w, centre_x, centre_y, mode
+            work, trig, shift, output, bev_h, bev_w, centre_x, centre_y, mode
         )
-        ctx.save_for_backward(work, angle, shift)
+        ctx.save_for_backward(work, trig, shift)
         ctx.spec = (bev_h, bev_w, centre_x, centre_y, mode)
         return output
 
     @staticmethod
     def backward(ctx, grad_output):
-        work, angle, shift = ctx.saved_tensors
+        work, trig, shift = ctx.saved_tensors
         bev_h, bev_w, centre_x, centre_y, mode = ctx.spec
         ext = _native()
         if ext is None:
@@ -292,7 +331,7 @@ class _NativeTemporalAlignFunction(torch.autograd.Function):
         grad_bev = torch.empty(work.shape, dtype=torch.float32, device=work.device)
         ext.temporal_align_backward(
             work,
-            angle,
+            trig,
             shift,
             grad_output.contiguous(),
             grad_bev,
@@ -309,21 +348,21 @@ class _NativeTemporalAlignPlanarFunction(torch.autograd.Function):
     """The same sampler reading and writing the caller's channels-first layout."""
 
     @staticmethod
-    def forward(ctx, work, angle, shift, bev_h, bev_w, centre_x, centre_y, mode):
+    def forward(ctx, work, trig, shift, bev_h, bev_w, centre_x, centre_y, mode):
         ext = _native()
         if ext is None:
             raise RuntimeError("muSPACE AOT native module is unavailable")
         output = torch.empty_like(work)
         ext.temporal_align_forward_planar(
-            work, angle, shift, output, bev_h, bev_w, centre_x, centre_y, mode
+            work, trig, shift, output, bev_h, bev_w, centre_x, centre_y, mode
         )
-        ctx.save_for_backward(work, angle, shift)
+        ctx.save_for_backward(work, trig, shift)
         ctx.spec = (bev_h, bev_w, centre_x, centre_y, mode)
         return output
 
     @staticmethod
     def backward(ctx, grad_output):
-        work, angle, shift = ctx.saved_tensors
+        work, trig, shift = ctx.saved_tensors
         bev_h, bev_w, centre_x, centre_y, mode = ctx.spec
         ext = _native()
         if ext is None:
@@ -331,7 +370,7 @@ class _NativeTemporalAlignPlanarFunction(torch.autograd.Function):
         grad_bev = torch.empty(work.shape, dtype=torch.float32, device=work.device)
         ext.temporal_align_backward_planar(
             work,
-            angle,
+            trig,
             shift,
             grad_output.contiguous(),
             grad_bev,
@@ -407,13 +446,13 @@ def temporal_align(
         return torch.zeros_like(bev)
     planar = _planar_eligible(bev, shift)
     work = bev if planar else _channels_last(bev, height, width)
-    angle_arg = _empty_ref(bev, torch.float32) if angle is None else angle.contiguous()
     shift_arg = _empty_ref(bev, torch.int32) if shift is None else shift.contiguous()
     kernel = _NativeTemporalAlignPlanarFunction if planar else _NativeTemporalAlignFunction
     try:
+        trig = _prepare_trig(bev, angle)
         output = kernel.apply(
             work,
-            angle_arg,
+            trig,
             shift_arg,
             height,
             width,

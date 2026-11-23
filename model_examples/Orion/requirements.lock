@@ -1,0 +1,59 @@
+# Python 3.10 compatibility overrides for Orion's legacy upstream requirements.
+#
+# Orion pins a Python 3.8-era stack (torch 2.4.1+cu118, numpy 1.23.0, numba 0.48.0,
+# transformers 4.31.0, flash-attn 0.2.8, shapely 1.8.5). The rows below are the
+# versions verified against torch 2.11 + torch_musa 2.11 on MUSA.
+
+# torch links against the NumPy 1.x C API. Installing a package that pulls NumPy 2
+# (for example an unpinned diffusers) breaks the tensor bridge, so keep NumPy at 1.x.
+numpy==1.23.5
+
+# Orion asks for numba 0.48.0, which has no Python 3.10 wheel; 0.66 is the first
+# release that supports Python 3.10 and NumPy 1.23 together.
+numba==0.66.0
+
+transformers==4.31.0
+tokenizers==0.13.3
+huggingface-hub==0.23.5
+peft==0.12.0
+diffusers==0.32.2
+sentencepiece==0.2.3
+accelerate==1.15.0
+safetensors==0.8.0
+
+# The container's libGL.so.1 is a broken symlink target, so the non-headless OpenCV
+# wheel fails to import; the headless build has no GL dependency.
+opencv-python-headless==4.11.0.86
+
+# The vendored mmcv imports matplotlib at module load (mmcv/utils/visual.py). Pin the
+# verified build so a newer release cannot demand a NumPy above the 1.x line.
+matplotlib==3.10.8
+shapely==2.0.7
+nuscenes-devkit
+scikit-image==0.25.2
+trimesh==5.2.0
+einops==0.8.2
+
+# Remaining pure-Python helpers imported by the vendored mmcv.
+addict
+yapf==0.40.1
+prettytable
+terminaltables
+six
+ephem
+dictor
+transforms3d
+simple_watchdog_timer
+casadi
+tabulate
+ipython
+seaborn
+pycocotools
+laspy
+similaritymeasures
+motmetrics
+cityscapesscripts
+imagecorruptions
+
+# flash-attn is not installed: Orion's vendored mmcv imports it at module import
+# time, and mu_space.patcher.orion_flash_attn installs a SDPA-backed shim instead.

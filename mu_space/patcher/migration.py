@@ -28,6 +28,7 @@ RECIPE_DIRECTORIES = {
     "sparse4d": "Sparse4D",
     "sparsedrive": "SparseDrive",
     "uniad": "UniAD",
+    "vad": "VAD",
 }
 RECIPE_SLUGS = tuple(RECIPE_DIRECTORIES)
 MANIFEST_NAME = "manifest.yaml"

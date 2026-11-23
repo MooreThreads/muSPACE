@@ -1,0 +1,21 @@
+# Python 3.10 compatibility overrides for the legacy upstream requirements.
+numpy==1.26.4
+numba==0.66.0
+networkx==3.4.2
+shapely==2.0.6
+opencv-python-headless==4.11.0.86
+matplotlib==3.5.3
+pyquaternion==0.9.9
+nuscenes-devkit==1.1.11
+descartes==1.1.0
+lazy-loader==0.5
+importlib-metadata>=6
+
+# VAD's planning metrics import scikit-image lazily (see
+# patches/vad-01-lazy-metrics-import.patch), so it is only needed when running
+# the planner evaluation, not for the training or inference launch checks.
+
+# Upstream ships a conda environment file with Python 3.8-era pins
+# (torch 1.9.1+cu111, mmcv-full 1.4.0, mmdet 2.14.0) that do not install on the
+# supported Python 3.10 stack. Install the remaining dependencies from the
+# pinned upstream checkout and the OpenMMLab compatibility workflow.

@@ -1,3 +1,5 @@
+import math
+
 import pytest
 import torch
 
@@ -231,9 +233,7 @@ def test_musa_conv_matches_host_reference_on_own_pairs(subm, stride):
         subm=bool(subm),
     )
 
-    torch.testing.assert_close(
-        device_output.cpu(), host_output.detach(), rtol=5e-3, atol=5e-3
-    )
+    torch.testing.assert_close(device_output.cpu(), host_output.detach(), rtol=5e-3, atol=5e-3)
 
     grad_canonical = torch.randn(host_output.shape, dtype=features.dtype)
     host_grad = grad_canonical
@@ -272,7 +272,18 @@ def test_sparseconv_indice_key_cache_reuses_rulebook(monkeypatch):
         transpose=False,
         grid=None,
     ):
-        del batch_size, spatial_shape, ksize, stride, padding, dilation, out_padding, subm, transpose, grid
+        del (
+            batch_size,
+            spatial_shape,
+            ksize,
+            stride,
+            padding,
+            dilation,
+            out_padding,
+            subm,
+            transpose,
+            grid,
+        )
         calls["pairs"] += 1
         outids = indices.clone()
         pair_num = torch.zeros((27,), dtype=torch.int32)
@@ -330,9 +341,7 @@ def test_subm_stride_other_than_one_is_rejected(device):
         pytest.skip("MUSA required")
     indices, _, _ = _fixture()
     with pytest.raises(ValueError, match="subm convolution requires stride=1"):
-        get_indice_pairs_3d(
-            indices.to(device), 2, (2, 2, 2), (4, 4, 4), 3, 2, 1, 1, 0, 1, 0
-        )
+        get_indice_pairs_3d(indices.to(device), 2, (2, 2, 2), (4, 4, 4), 3, 2, 1, 1, 0, 1, 0)
 
 
 @pytest.mark.skipif(not _MUSA, reason="MUSA required")
@@ -388,3 +397,128 @@ def test_native_pair_path_matches_reference(dtype):
     torch.testing.assert_close(
         grad_weights.reshape_as(filters), filters.grad, rtol=tolerance, atol=tolerance
     )
+
+
+# --- regressions ------------------------------------------------------------
+
+
+def _duplicate_coordinate_fixture(dtype=torch.float32):
+    """Two rows share a coordinate, so the subm centre rulebook is not the identity."""
+    indices = torch.tensor(
+        [[0, 0, 0, 0], [0, 0, 0, 1], [0, 0, 1, 0], [0, 0, 0, 0], [0, 1, 1, 1], [0, 1, 1, 1]],
+        dtype=torch.int32,
+    )
+    features = torch.arange(1, 1 + indices.shape[0] * 3, dtype=dtype).view(-1, 3) / 17
+    filters = torch.arange(1, 1 + 27 * 3 * 2, dtype=dtype).view(27, 3, 2) / 23
+    return indices, features, filters
+
+
+def _duplicate_coordinate_rulebook():
+    indices, features, filters = _duplicate_coordinate_fixture()
+    arguments = (1, (2, 2, 2), (2, 2, 2), 3, 1, 1, 1, 0, 1, 0)
+    outids, pairs, pair_num = get_indice_pairs_3d(indices, *arguments)
+    return outids, pairs, pair_num, features, filters
+
+
+def test_subm_center_shortcut_matches_the_pair_based_sum_with_duplicate_coordinates():
+    """The subm centre shortcut adds ``features @ filters[centre]`` for
+    every input row and skips the centre in the pair loop. That is only the same
+    sum when the centre rulebook is the identity; duplicate coordinates keep one
+    pair per distinct coordinate, so the CPU path disagreed with every pair-based
+    kernel (max_abs 2.059, cosine 0.985 on the filed repro)."""
+    outids, pairs, pair_num, features, filters = _duplicate_coordinate_rulebook()
+    n_out = outids.shape[0]
+    shortcut = indice_conv(features.clone(), filters.clone(), pairs, pair_num, n_out, subm=True)
+    pair_based = indice_conv(features.clone(), filters.clone(), pairs, pair_num, n_out, subm=False)
+    torch.testing.assert_close(shortcut, pair_based, rtol=1e-6, atol=1e-6)
+    torch.testing.assert_close(
+        shortcut, _reference_conv(features, filters, pairs, pair_num, n_out), rtol=1e-6, atol=1e-6
+    )
+
+
+def test_subm_center_shortcut_backward_matches_with_duplicate_coordinates():
+    outids, pairs, pair_num, features, filters = _duplicate_coordinate_rulebook()
+    n_out = outids.shape[0]
+    generator = torch.Generator().manual_seed(5)
+    grad_output = torch.randn(n_out, filters.shape[-1], generator=generator)
+    shortcut = indice_conv_backward(features, filters, grad_output, pairs, pair_num, subm=True)
+    pair_based = indice_conv_backward(features, filters, grad_output, pairs, pair_num, subm=False)
+    for actual, expected in zip(shortcut, pair_based):
+        torch.testing.assert_close(actual, expected, rtol=1e-6, atol=1e-6)
+
+
+@pytest.mark.skipif(not _NATIVE, reason="MUSA AOT native library required")
+def test_native_subm_duplicate_coordinates_match_the_host_reference():
+    """The device kernel always sums the rulebook, so the CPU path has
+    to agree with it on duplicate coordinates too."""
+    outids, pairs, pair_num, features, filters = _duplicate_coordinate_rulebook()
+    n_out = outids.shape[0]
+    weights = _flatten_filters(filters)
+    device = indice_conv(
+        features.musa(), weights.musa(), pairs.musa(), pair_num.musa(), n_out, subm=True
+    )
+    torch.musa.synchronize()
+    reference = _reference_conv(features, filters, pairs, pair_num, n_out)
+    torch.testing.assert_close(device.cpu(), reference, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.skipif(not _NATIVE, reason="MUSA AOT native library required")
+def test_pair_path_strict_float32_matches_the_reference(monkeypatch):
+    """``MUSPACE_SPCONV_FP32_TF32=0`` is the strict IEEE mode: the gather → GEMM →
+    scatter-add path must then reproduce the reference to fp32 rounding."""
+    monkeypatch.setenv("MUSPACE_SPCONV_FP32_TF32", "0")
+    outids, pairs, pair_num, features, filters = _duplicate_coordinate_rulebook()
+    n_out = outids.shape[0]
+    weights = _flatten_filters(filters)
+    device = _native_gather_gemm_scatter_conv(
+        features.musa(), weights.musa(), pairs.musa(), pair_num.musa(), n_out
+    )
+    torch.musa.synchronize()
+    reference = _reference_conv(features, filters, pairs, pair_num, n_out)
+    torch.testing.assert_close(device.cpu(), reference, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.skipif(not _NATIVE, reason="MUSA AOT native library required")
+def test_pair_path_tf32_is_the_documented_reduced_precision_mode(monkeypatch):
+    """The production default runs the fp32 GEMMs in TF32 (docs/operator_matrix.md),
+    so this test pins the documented reduced-precision tolerance."""
+    monkeypatch.setenv("MUSPACE_SPCONV_FP32_TF32", "1")
+    outids, pairs, pair_num, features, filters = _duplicate_coordinate_rulebook()
+    n_out = outids.shape[0]
+    weights = _flatten_filters(filters)
+    device = _native_gather_gemm_scatter_conv(
+        features.musa(), weights.musa(), pairs.musa(), pair_num.musa(), n_out
+    )
+    torch.musa.synchronize()
+    reference = _reference_conv(features, filters, pairs, pair_num, n_out)
+    torch.testing.assert_close(device.cpu(), reference, rtol=5e-3, atol=5e-3)
+
+
+@pytest.mark.skipif(not _MUSA, reason="MUSA required")
+@pytest.mark.parametrize(
+    "case", ["all_inf_filters", "zero_features_inf_filters", "single_nan_feature"]
+)
+def test_non_finite_propagation_matches_the_reference(case):
+    """On deterministic single-point non-finite inputs the MUSA and CPU
+    paths must place the non-finite outputs identically."""
+    outids, pairs, pair_num, features, filters = _duplicate_coordinate_rulebook()
+    if case == "all_inf_filters":
+        filters = torch.full_like(filters, math.inf)
+    elif case == "zero_features_inf_filters":
+        features = torch.zeros_like(features)
+        filters = torch.full_like(filters, math.inf)
+    else:
+        features = features.clone()
+        features[0, 0] = math.nan
+    n_out = outids.shape[0]
+    reference = _reference_conv(features, filters, pairs, pair_num, n_out)
+    device = indice_conv(
+        features.musa(),
+        _flatten_filters(filters).musa(),
+        pairs.musa(),
+        pair_num.musa(),
+        n_out,
+        subm=True,
+    )
+    torch.musa.synchronize()
+    assert torch.equal(torch.isfinite(reference), torch.isfinite(device.cpu()))

@@ -1,0 +1,26 @@
+name: Orion
+repository: https://github.com/xiaomi-mlab/Orion.git
+reference_branch: main
+reference_commit: 657f3cf09b745d3972affb84d68f7e376140b221
+default_checkout: Orion
+integration:
+  maintains_fork: false
+  operator: boxes_iou_bev,nms_bev,nms_bev_normal,sigmoid_focal_loss,points_in_boxes_gpu,points_in_boxes_batch,points_in_boxes_cpu
+  runtime_patcher: mu_space.patcher.orion_patcher.OrionPatcher
+  strict_backend: musa
+  scope: single-frame inference only
+patch_marker: .mu_space_orion.json
+dependency_patches:
+  - path: patches/deps-mmcv-ext-loader-lazy.patch
+    sha256: cf0eda73e626377d4b3a524a406814ed7fa13316b691054bec4c87a59192281d
+    scope: vendored_mmcv_ext_loader_lazy_import
+patches:
+  - path: patches/orion-01-lazy-iou3d-cuda.patch
+    sha256: 5de6d80096313a5560a5e33baf74a65d5c8a150c7954319940107f2319fe7a10
+    scope: iou3d_cuda_lazy_import
+  - path: patches/orion-02-lazy-roiaware-ext.patch
+    sha256: 796798c52fb8433c8c19b81e018fa3396df13a131ac84f4559271ef98cbcbb3d
+    scope: roiaware_pool3d_ext_lazy_import
+  - path: patches/orion-03-musa-device-calls.patch
+    sha256: 1293b24cb313c3ee69723611a895cb7bfaf7a3e190e2a059dd7db0d1c57ab682
+    scope: device_agnostic_attention_grid_mask_and_nms_calls

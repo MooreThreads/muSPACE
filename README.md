@@ -6,7 +6,7 @@ canonical MUSA operator APIs, thin framework compatibility adapters, and reprodu
 migration recipes.
 
 The repository provides launch recipes for official BEVFormer, BEVFusion, FlashOcc, OpenVLA, UniAD,
-QCNet, SparseDrive, and Qwen-Drive checkouts. muSPACE does not maintain model forks; it prepares
+VAD, QCNet, SparseDrive, and Qwen-Drive checkouts. muSPACE does not maintain model forks; it prepares
 official upstream checkouts with
 explicit compatibility patches and runtime replacement hooks.
 
@@ -93,7 +93,7 @@ model_examples/BEVFormer/scripts/prepare_checkout.sh ./BEVFormer
 mu-space migrate bevformer --checkout ./BEVFormer
 ```
 
-The same pair works for `flashocc`, `openvla`, `uniad`, `sparsedrive`, `sparse4d`, and `qwendrive`
+The same pair works for `flashocc`, `openvla`, `uniad`, `vad`, `sparsedrive`, `sparse4d`, and `qwendrive`
 with their own recipe directory and checkout path. `mu-space restore <model> --checkout <path>` reverses the
 recipe.
 
@@ -139,7 +139,7 @@ maintaining forks.
 
 | Operator | Canonical API | MUSA native | Reference | Model integration |
 | --- | --- | --- | --- | --- |
-| multi-scale deformable attention | `mu_space.ops.multi_scale_deformable_attn` | available for MUSA FP32/BF16/FP16 tensors | PyTorch reference fallback | BEVFormer, UniAD, and Qwen-Drive runtime patcher |
+| multi-scale deformable attention | `mu_space.ops.multi_scale_deformable_attn` | available for MUSA FP32/BF16/FP16 tensors | PyTorch reference fallback | BEVFormer, UniAD, VAD, and Qwen-Drive runtime patcher |
 | BEVPoolV2 | `mu_space.ops.bev_pool_v2` | available for MUSA tensors | PyTorch reference fallback | FlashOcc runtime patcher |
 | BEVDepth voxel pooling (train) | `mu_space.ops.voxel_pooling_train` | available for MUSA tensors | PyTorch reference fallback | BEVDepth runtime patcher |
 | grid sampling | `mu_space.ops.grid_sample` | 2-D/3-D FP32/FP16/BF16 forward and backward | `torch.nn.functional.grid_sample` | standalone operator API |
@@ -152,7 +152,7 @@ maintaining forks.
 | FlashSCA pooling | `mu_space.ops.flash_bevpool_sca` | available for MUSA tensors | PyTorch reference fallback | standalone operator API |
 | BEVFusion BEV IoU/NMS | `mu_space.ops.boxes_iou_bev`, `nms_bev`, `nms_bev_normal` | available for MUSA tensors | PyTorch reference fallback | BEVFusion iou3d patcher |
 | Hard voxelize | `mu_space.ops.hard_voxelize` | available for MUSA tensors | PyTorch reference fallback | mmdet3d voxelization compatibility |
-| points in rotated 3-D boxes | `mu_space.ops.points_in_boxes_all` | available for MUSA tensors | PyTorch reference fallback | BEVFusion Depth batch point-in-box path |
+| points in rotated 3-D boxes | `mu_space.ops.points_in_boxes_all`, `points_in_boxes_gpu`, `points_in_boxes_batch`, `points_in_boxes_cpu` | available for MUSA tensors; `points_in_boxes_cpu` is unbatched and reference-only | PyTorch reference fallback | BEVFusion Depth batch point-in-box path |
 | radius neighborhood query | `mu_space.ops.radius`, `radius_graph` | FP32, D < 9, sorted non-negative batches, int32 indexing range | `radius_reference`, `radius_graph_reference` | standalone operator API |
 
 DCNv2 is native-only: the deformable columns are the whole operator, so a PyTorch emulation
@@ -229,6 +229,7 @@ Model-specific validation entrypoints live with each model recipe.
 | BEVFusion | `bash model_examples/BEVFusion/scripts/train_1p_fusion_smoke.sh --checkout ./BEVFusion` | [BEVFusion guide](model_examples/BEVFusion/README.md) |
 | FlashOcc | `bash model_examples/FlashOCC/scripts/train_1p_occ_smoke.sh --checkout ./FlashOCC` | [FlashOcc guide](model_examples/FlashOCC/README.md) |
 | UniAD | `bash model_examples/UniAD/scripts/train_1p_stage1_smoke.sh --checkout ./UniAD` | [UniAD guide](model_examples/UniAD/README.md) |
+| VAD | `bash model_examples/VAD/scripts/train_1p_stage1_smoke.sh --checkout ./VAD` | [VAD guide](model_examples/VAD/README.md), [fixture validation](model_examples/VAD/fixture_validation.md) |
 | OpenVLA | `bash model_examples/OpenVLA/scripts/validate_fixture.sh --checkout ./OpenVLA` | [OpenVLA guide](model_examples/OpenVLA/README.md) |
 | LingBotVA | `bash model_examples/LingBotVA/scripts/validate_fixture.sh --checkout ./LingBotVA` | [LingBotVA guide](model_examples/LingBotVA/README.md), [fixture validation](model_examples/LingBotVA/fixture_validation.md) |
 | QCNet | `bash model_examples/QCNet/scripts/validate_fixture.sh --checkout ./QCNet --data-root <AV2_SUBSET_ROOT>` | [QCNet guide](model_examples/QCNet/README.md), [validation contract](model_examples/QCNet/fixture_validation.md) |

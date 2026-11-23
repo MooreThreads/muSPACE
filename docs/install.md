@@ -18,6 +18,7 @@ Model recipes pin one upstream commit each:
 | `bevformer` | `66b65f3a1f58caf0507cb2a971b9c0e7f842376c` |
 | `flashocc` | `449dc7947d6549ccb72a99d6f6d8c02f166ec0dd` |
 | `uniad` | `7b5bf15e0e49522b6553ddc48e67833e8f5f0f52` |
+| `vad` | `1688c4b1c3a9e2e7873ca9700ff8058170c0e3c8` |
 | `sparsedrive` | `fbadea693cbef3f3daea7705e521c0dd3321605c` |
 | `sparse4d` | `4ec96edf0e7d9e80fbd75ef22e1d51a937d3a750` |
 | `qwendrive` | `28091c1532e869bc7aee91fc0aef6b3e6fd0b2e0` |

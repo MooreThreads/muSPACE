@@ -1,0 +1,25 @@
+name: VAD
+repository: https://github.com/hustvl/VAD.git
+reference_branch: main
+reference_commit: 1688c4b1c3a9e2e7873ca9700ff8058170c0e3c8
+default_checkout: VAD
+integration:
+  maintains_fork: false
+  operator: multi_scale_deformable_attn
+  runtime_patcher: mu_space.patcher.default_patcher
+  strict_backend: musa
+patch_marker: .mu_space_vad.json
+dependency_patches:
+  - path: patches/deps-mmcv-1.7.0-lazy-ext.patch
+    sha256: 5294f48bf78b2488cf577b86089740aaf39126f8e307393e684973ec356ebac2
+    scope: mmcv_1_7_0_pure_python_ext_loader
+patches:
+  - path: patches/vad-01-lazy-metrics-import.patch
+    sha256: 642be8c2e085be4219791e82dee4889c6d37641af5c810249cf40e093c26268e
+    scope: planner_metrics_lazy_skimage_import
+  - path: patches/vad-02-points-in-boxes-fallback.patch
+    sha256: c2919ee0849995ca17245721b4695bab0398884dcddadf735497cf8512115650
+    scope: lidar_boxes_points_in_boxes_muspace_fallback
+  - path: patches/vad-03-grid-mask-device-placement.patch
+    sha256: 1bf7cfe16fab36b1410f253b42fcf4b563603cdee9878136547c4176458198e6
+    scope: grid_mask_device_placement

@@ -42,9 +42,7 @@ def test_boxes_iou_bev_disjoint_and_empty():
     ],
 )
 def test_boxes_iou_bev_containment_tangent_and_degenerate(boxes_a, boxes_b, expected):
-    actual = boxes_iou_bev(
-        torch.tensor(boxes_a), torch.tensor(boxes_b), backend="reference"
-    )
+    actual = boxes_iou_bev(torch.tensor(boxes_a), torch.tensor(boxes_b), backend="reference")
     torch.testing.assert_close(actual, torch.tensor([[expected]]), atol=1e-6, rtol=1e-6)
 
 
@@ -128,8 +126,13 @@ def test_bevfusion_patcher_rebinds_iou_and_nms(monkeypatch):
     nms_module = types.ModuleType("mmdet3d.core.post_processing.box3d_nms")
     nms_module.nms_gpu = object()
     nms_module.nms_normal_gpu = object()
-    parent_names = ("mmdet3d", "mmdet3d.ops", "mmdet3d.ops.iou3d", "mmdet3d.core",
-                    "mmdet3d.core.post_processing")
+    parent_names = (
+        "mmdet3d",
+        "mmdet3d.ops",
+        "mmdet3d.ops.iou3d",
+        "mmdet3d.core",
+        "mmdet3d.core.post_processing",
+    )
     modules = {name: types.ModuleType(name) for name in parent_names}
     modules.update({iou_module.__name__: iou_module, nms_module.__name__: nms_module})
     for name, module in modules.items():
@@ -154,8 +157,13 @@ def test_bevfusion_patcher_supports_reference_backend(monkeypatch):
         module.nms_gpu = object()
         module.nms_normal_gpu = object()
     iou_module.boxes_iou_bev = object()
-    parent_names = ("mmdet3d", "mmdet3d.ops", "mmdet3d.ops.iou3d", "mmdet3d.core",
-                    "mmdet3d.core.post_processing")
+    parent_names = (
+        "mmdet3d",
+        "mmdet3d.ops",
+        "mmdet3d.ops.iou3d",
+        "mmdet3d.core",
+        "mmdet3d.core.post_processing",
+    )
     modules = {name: types.ModuleType(name) for name in parent_names}
     modules.update({iou_module.__name__: iou_module, nms_module.__name__: nms_module})
     for name, module in modules.items():
@@ -182,8 +190,13 @@ def test_bevfusion_patcher_rejects_incomplete_install_without_mutation(monkeypat
     nms_module = types.ModuleType("mmdet3d.core.post_processing.box3d_nms")
     nms_module.nms_gpu = object()
     # Deliberately omit nms_normal_gpu to emulate an incompatible partial install.
-    parent_names = ("mmdet3d", "mmdet3d.ops", "mmdet3d.ops.iou3d", "mmdet3d.core",
-                    "mmdet3d.core.post_processing")
+    parent_names = (
+        "mmdet3d",
+        "mmdet3d.ops",
+        "mmdet3d.ops.iou3d",
+        "mmdet3d.core",
+        "mmdet3d.core.post_processing",
+    )
     modules = {name: types.ModuleType(name) for name in parent_names}
     modules.update({iou_module.__name__: iou_module, nms_module.__name__: nms_module})
     for name, module in modules.items():
@@ -282,3 +295,46 @@ class TestNativeMUSA:
             expected = nms(boxes, scores, 0.5, backend="reference")
             actual = nms(boxes.musa(), scores.musa(), 0.5, backend="musa").cpu()
             torch.testing.assert_close(actual, expected)
+
+
+# --- identical boxes far from the origin keep IoU 1.0 -----------------------
+
+FAR_X1 = [0.0, 100.0, 200.0, 250.0, 252.0, 254.0, 256.0, 300.0, 1000.0, -250.0, -256.0, -300.0]
+
+
+@pytest.mark.parametrize("x1", FAR_X1)
+def test_identical_boxes_keep_unit_iou_far_from_the_origin(x1):
+    """The polygon reference stays exact at any coordinate; it is the oracle."""
+    boxes = torch.tensor([[x1, 0.0, x1 + 4.0, 2.0, 0.0]])
+    actual = boxes_iou_bev(boxes, boxes.clone(), backend="reference")
+    torch.testing.assert_close(actual, torch.ones(1, 1), rtol=0, atol=0)
+
+
+@pytest.mark.skipif(
+    not hasattr(torch, "musa") or not torch.musa.is_available(), reason="MUSA required"
+)
+@pytest.mark.parametrize("x1", FAR_X1)
+def test_native_identical_boxes_keep_unit_iou_far_from_the_origin(x1):
+    """``in_box`` used an absolute 1e-5 margin. Once ulp(coordinate) / 2
+    exceeded it the rotated corner rounded back onto the boundary, the corner was
+    rejected and the self overlap collapsed to 0."""
+    boxes = torch.tensor([[x1, 0.0, x1 + 4.0, 2.0, 0.0]], device="musa")
+    clear_dispatch_report()
+    actual = boxes_iou_bev(boxes, boxes.clone(), backend="musa")
+    report = get_last_dispatch_report()
+    assert report.selected_backend == "musa"
+    assert report.native_fallback is False
+    torch.testing.assert_close(actual.cpu(), torch.ones(1, 1), rtol=0, atol=0)
+
+
+@pytest.mark.skipif(
+    not hasattr(torch, "musa") or not torch.musa.is_available(), reason="MUSA required"
+)
+def test_native_nms_suppresses_duplicate_boxes_far_from_the_origin():
+    """A duplicated detection outside the old window must still be suppressed."""
+    boxes = torch.tensor(
+        [[300.0, 300.0, 304.0, 304.0, 0.0], [300.0, 300.0, 304.0, 304.0, 0.0]], device="musa"
+    )
+    scores = torch.tensor([0.9, 0.8], device="musa")
+    keep = nms_bev(boxes, scores, 0.5, backend="musa").cpu()
+    assert keep.tolist() == [0]

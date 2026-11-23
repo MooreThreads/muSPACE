@@ -42,7 +42,7 @@ using muspace::ffi_utils::stream;
 
 namespace {
 
-constexpr float kPi             = 3.14159265358979323846F;
+constexpr double kPi            = 3.14159265358979323846;
 constexpr int   kMaxThreads     = 256;
 constexpr int   kMaxGroupWidth  = 128;
 constexpr int   kWarpSize       = 32;
@@ -91,6 +91,13 @@ __device__ __forceinline__ __mt_bfloat16 from_float(float value) {
 // Trigonometry for one sample. Quarter turns snap to their exact values: float32
 // argument reduction moves cos(90 deg) by about 4e-8, which is enough to send a
 // nearest-neighbour sample sitting on an exact half pixel to the other side.
+//
+// Every other angle is evaluated in double and only then rounded to float32,
+// because that is what the reference does: it takes cos/sin from Python's
+// double-precision libm and lets the float32 tensor op cast the scalar.  A
+// float32 sin/cos can be one ulp away, and one ulp of sin times a 183-pixel
+// offset is enough to flip a nearest-neighbour tie, so the extra precision is
+// what makes the tap choice match ``F.grid_sample`` bit for bit.
 __device__ __forceinline__ void sample_trig(float degrees, float* sine, float* cosine) {
   const float quarter = nearbyintf(degrees * (1.0F / 90.0F));
   if (fabsf(quarter) < 1.0e6F && fabsf(degrees - quarter * 90.0F) <= 1.0e-4F) {
@@ -99,7 +106,12 @@ __device__ __forceinline__ void sample_trig(float degrees, float* sine, float* c
     *sine          = (turn == 1) ? 1.0F : ((turn == 3) ? -1.0F : 0.0F);
     return;
   }
-  sincosf(degrees * (kPi / 180.0F), sine, cosine);
+  const double radians = static_cast<double>(degrees) * (kPi / 180.0);
+  double       s       = 0.0;
+  double       c       = 0.0;
+  sincos(radians, &s, &c);
+  *sine   = static_cast<float>(s);
+  *cosine = static_cast<float>(c);
 }
 
 // Source position of an output pixel, in source pixel-index space.
@@ -119,6 +131,21 @@ __device__ __forceinline__ void source_position(int    x,
   *sample_y           = sine * delta_x + cosine * delta_y + centre_y + shift_y;
 }
 
+// The source position expressed the way ``F.grid_sample`` sees it.
+//
+// ``temporal_align_reference`` feeds a normalised grid to ``F.grid_sample``, which
+// unnormalises it again with ``((coord + 1) * size - 1) / 2`` for
+// ``align_corners=False``.  Both roundings are float32, and on an exact half
+// pixel they are what decides a nearest-neighbour tie: the round trip can land
+// just below the half, where ``nearbyintf`` then rounds down while the exact
+// coordinate rounds to even.  Reproducing the round trip keeps the kernel bit
+// identical to the reference at those ties.
+__device__ __forceinline__ float pytorch_source_index(float sample, int size) {
+  const float extent = static_cast<float>(size);
+  const float grid   = (2.0F * sample + 1.0F - extent) / extent;
+  return ((grid + 1.0F) * extent - 1.0F) * 0.5F;
+}
+
 // Collects the in-range source taps of one output pixel and returns the tap
 // count. A zero count means the pixel samples padding and yields zeros. Offsets
 // are element offsets into one channel plane, scaled by `stride`: a packed
@@ -134,8 +161,16 @@ __device__ __forceinline__ int collect_taps(float    sample_x,
                                             int64_t* offsets,
                                             float*   weights) {
   if (nearest) {
-    const int index_x = static_cast<int>(nearbyintf(sample_x));
-    const int index_y = static_cast<int>(nearbyintf(sample_y));
+    // The tie-break has to follow the reference, so the index is chosen from the
+    // grid-normalised position rather than from the exact source coordinate.
+    const float normalised_x = pytorch_source_index(sample_x, width);
+    const float normalised_y = pytorch_source_index(sample_y, height);
+    // A non-finite rotation reaches this point instead of raising: the native path
+    // does not scan the caller's angle (that costs a device synchronization per
+    // call).  It lands on no tap rather than rounding an undefined value.
+    if (!(normalised_x == normalised_x) || !(normalised_y == normalised_y)) return 0;
+    const int index_x = static_cast<int>(nearbyintf(normalised_x));
+    const int index_y = static_cast<int>(nearbyintf(normalised_y));
     if (index_x < 0 || index_x >= width || index_y < 0 || index_y >= height) return 0;
     offsets[0] = (static_cast<int64_t>(index_y) * width + index_x) * stride;
     weights[0] = 1.0F;
@@ -165,6 +200,12 @@ __device__ __forceinline__ int collect_taps(float    sample_x,
 }
 
 // Sample geometry of one batch entry.
+//
+// ``trig`` holds ``(cosine, sine)`` per sample, prepared once per call by
+// ``prepare_trig_kernel``.  Keeping the double-precision trigonometry out of the
+// sampling kernels matters: inlining it cost about 3x on the forward pass and 1.5x
+// on the backward pass, because the extra 64-bit registers reduced occupancy of
+// these bandwidth-bound kernels even on runs with no rotation at all.
 struct SampleGeometry {
   float cosine;
   float sine;
@@ -172,18 +213,31 @@ struct SampleGeometry {
   float shift_y;
 };
 
-__device__ __forceinline__ SampleGeometry sample_geometry(const float* angle,
+__device__ __forceinline__ SampleGeometry sample_geometry(const float* trig,
                                                           const void*  shift,
                                                           int64_t      shift_kind,
                                                           int          batch) {
-  SampleGeometry geometry{1.0F, 0.0F, 0.0F, 0.0F};
-  if (angle != nullptr) sample_trig(angle[batch], &geometry.sine, &geometry.cosine);
+  SampleGeometry geometry{trig[2 * batch], trig[2 * batch + 1], 0.0F, 0.0F};
   if (shift_kind == kShiftFloat) {
     const float* values = static_cast<const float*>(shift);
     geometry.shift_x    = values[2 * batch];
     geometry.shift_y    = values[2 * batch + 1];
   }
   return geometry;
+}
+
+// Fills the per-sample ``(cosine, sine)`` table once per call.
+__global__ void prepare_trig_kernel(const float* __restrict__ angle,
+                                    int                            batch,
+                                    float* __restrict__            trig) {
+  const int sample = static_cast<int>(blockIdx.x) * static_cast<int>(blockDim.x) +
+                     static_cast<int>(threadIdx.x);
+  if (sample >= batch) return;
+  float sine   = 0.0F;
+  float cosine = 1.0F;
+  if (angle != nullptr) sample_trig(angle[sample], &sine, &cosine);
+  trig[2 * sample]     = cosine;
+  trig[2 * sample + 1] = sine;
 }
 
 // --------------------------------------------------------------------------------------
@@ -603,7 +657,11 @@ __global__ void planar_backward_gather_kernel(const float* __restrict__ grad_out
                       &sample_x,
                       &sample_y);
       if (Nearest) {
-        if (static_cast<int>(nearbyintf(sample_x)) == x && static_cast<int>(nearbyintf(sample_y)) == y) {
+        const float normalised_x = pytorch_source_index(sample_x, width);
+        const float normalised_y = pytorch_source_index(sample_y, height);
+        if (!(normalised_x == normalised_x) || !(normalised_y == normalised_y)) continue;
+        if (static_cast<int>(nearbyintf(normalised_x)) == x &&
+            static_cast<int>(nearbyintf(normalised_y)) == y) {
           weight[slot] = 1.0F;
         }
         continue;
@@ -894,12 +952,11 @@ void check_geometry(
   TVM_FFI_ICHECK_LT(bev.size(2), static_cast<int64_t>(INT_MAX)) << "bev channels exceed the indexing range";
   TVM_FFI_ICHECK_LE(bev.size(0) * bev_h * bev_w, static_cast<int64_t>(INT_MAX)) << "bev plane exceeds the launch range";
   TVM_FFI_ICHECK(mode == kBilinear || mode == kNearest) << "unknown interpolation mode";
-  if (angle.numel() != 0) {
-    check_musa_contiguous(angle, "angle", kDLFloat32);
-    check_same_musa_device(bev, angle, "angle");
-    TVM_FFI_ICHECK_EQ(angle.ndim(), 1) << "angle must be (batch,)";
-    TVM_FFI_ICHECK_EQ(angle.size(0), bev.size(0)) << "angle length must match the batch";
-  }
+  check_musa_contiguous(angle, "trig", kDLFloat32);
+  check_same_musa_device(bev, angle, "trig");
+  TVM_FFI_ICHECK_EQ(angle.ndim(), 2) << "trig must be (batch, 2)";
+  TVM_FFI_ICHECK_EQ(angle.size(0), bev.size(0)) << "trig length must match the batch";
+  TVM_FFI_ICHECK_EQ(angle.size(1), 2) << "trig must be (batch, 2)";
   if (shift.numel() != 0) {
     TVM_FFI_ICHECK(same_dtype(shift.dtype(), kDLInt32) || same_dtype(shift.dtype(), kDLFloat32))
         << "shift must use int32 or float32";
@@ -908,9 +965,6 @@ void check_geometry(
     TVM_FFI_ICHECK_EQ(shift.ndim(), 2) << "shift must be (batch, 2)";
     TVM_FFI_ICHECK_EQ(shift.size(0), bev.size(0)) << "shift length must match the batch";
     TVM_FFI_ICHECK_EQ(shift.size(1), 2) << "shift must be (batch, 2)";
-    if (same_dtype(shift.dtype(), kDLInt32)) {
-      TVM_FFI_ICHECK(angle.numel() == 0) << "an integer shift cannot be combined with an angle";
-    }
   }
 }
 
@@ -1247,12 +1301,11 @@ void check_planar_geometry(
   TVM_FFI_ICHECK_GT(bev.size(1), 0) << "bev channels must be positive";
   TVM_FFI_ICHECK_LT(bev.size(1), static_cast<int64_t>(INT_MAX)) << "bev channels exceed the indexing range";
   TVM_FFI_ICHECK(mode == kBilinear || mode == kNearest) << "unknown interpolation mode";
-  if (angle.numel() != 0) {
-    check_musa_contiguous(angle, "angle", kDLFloat32);
-    check_same_musa_device(bev, angle, "angle");
-    TVM_FFI_ICHECK_EQ(angle.ndim(), 1) << "angle must be (batch,)";
-    TVM_FFI_ICHECK_EQ(angle.size(0), bev.size(0)) << "angle length must match the batch";
-  }
+  check_musa_contiguous(angle, "trig", kDLFloat32);
+  check_same_musa_device(bev, angle, "trig");
+  TVM_FFI_ICHECK_EQ(angle.ndim(), 2) << "trig must be (batch, 2)";
+  TVM_FFI_ICHECK_EQ(angle.size(0), bev.size(0)) << "trig length must match the batch";
+  TVM_FFI_ICHECK_EQ(angle.size(1), 2) << "trig must be (batch, 2)";
   if (shift.numel() != 0) {
     TVM_FFI_ICHECK(same_dtype(shift.dtype(), kDLFloat32)) << "a planar call accepts only a float32 shift";
     check_musa_contiguous(shift, "shift", shift.dtype());
@@ -1327,6 +1380,33 @@ void temporal_align_backward_planar(ffi::TensorView bev,
   check_last_error("temporal_align backward planar");
 }
 
+// Prepares the per-sample ``(cosine, sine)`` table the sampling kernels read.
+// ``angle`` is empty when the call has no rotation; the table then holds the
+// identity rotation.  Doing the trigonometry once per call keeps the fp64 work out
+// of the bandwidth-bound sampling kernels.
+void temporal_align_prepare_trig(ffi::TensorView angle, ffi::TensorView trig) {
+  check_musa_contiguous(trig, "trig", kDLFloat32);
+  TVM_FFI_ICHECK_EQ(trig.ndim(), 2) << "trig must be (batch, 2)";
+  TVM_FFI_ICHECK_EQ(trig.size(1), 2) << "trig must be (batch, 2)";
+  const int64_t batch = trig.size(0);
+  const float*  angle_ptr = nullptr;
+  if (angle.numel() != 0) {
+    check_musa_contiguous(angle, "angle", kDLFloat32);
+    check_same_musa_device(trig, angle, "angle");
+    TVM_FFI_ICHECK_EQ(angle.ndim(), 1) << "angle must be (batch,)";
+    TVM_FFI_ICHECK_EQ(angle.size(0), batch) << "angle length must match the batch";
+    angle_ptr = static_cast<const float*>(angle.data_ptr());
+  }
+  if (batch > 0) {
+    constexpr int threads = 128;
+    const int     blocks  = static_cast<int>((batch + threads - 1) / threads);
+    prepare_trig_kernel<<<blocks, threads, 0, stream(trig)>>>(
+        angle_ptr, static_cast<int>(batch), static_cast<float*>(trig.data_ptr()));
+  }
+  check_last_error("temporal_align prepare trig");
+}
+
+TVM_FFI_DLL_EXPORT_TYPED_FUNC(temporal_align_prepare_trig, temporal_align_prepare_trig);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(temporal_align_forward, temporal_align_forward);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(temporal_align_backward, temporal_align_backward);
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(temporal_align_forward_planar, temporal_align_forward_planar);

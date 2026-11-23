@@ -1,0 +1,33 @@
+diff --git a/mmcv/ops/roiaware_pool3d/points_in_boxes.py b/mmcv/ops/roiaware_pool3d/points_in_boxes.py
+index f576fed..6194869 100644
+--- a/mmcv/ops/roiaware_pool3d/points_in_boxes.py
++++ b/mmcv/ops/roiaware_pool3d/points_in_boxes.py
+@@ -1,6 +1,10 @@
+ import torch
+ 
+-from . import roiaware_pool3d_ext
++try:
++    from . import roiaware_pool3d_ext
++except ImportError:  # compiled extension unavailable
++    from mmcv.utils.ext_loader import MissingExtension
++    roiaware_pool3d_ext = MissingExtension('ops.roiaware_pool3d.roiaware_pool3d_ext')
+ 
+ 
+ def points_in_boxes_gpu(points, boxes):
+diff --git a/mmcv/ops/roiaware_pool3d/roiaware_pool3d.py b/mmcv/ops/roiaware_pool3d/roiaware_pool3d.py
+index 536c9a1..2e5a993 100644
+--- a/mmcv/ops/roiaware_pool3d/roiaware_pool3d.py
++++ b/mmcv/ops/roiaware_pool3d/roiaware_pool3d.py
+@@ -3,7 +3,11 @@ import torch
+ from torch import nn as nn
+ from torch.autograd import Function
+ 
+-from . import roiaware_pool3d_ext
++try:
++    from . import roiaware_pool3d_ext
++except ImportError:  # compiled extension unavailable
++    from mmcv.utils.ext_loader import MissingExtension
++    roiaware_pool3d_ext = MissingExtension('ops.roiaware_pool3d.roiaware_pool3d_ext')
+ 
+ 
+ class RoIAwarePool3d(nn.Module):

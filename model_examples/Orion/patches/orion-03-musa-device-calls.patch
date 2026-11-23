@@ -1,0 +1,84 @@
+diff --git a/mmcv/models/dense_heads/orion_head.py b/mmcv/models/dense_heads/orion_head.py
+index 0c6bc62..eeb4e99 100644
+--- a/mmcv/models/dense_heads/orion_head.py
++++ b/mmcv/models/dense_heads/orion_head.py
+@@ -579,7 +579,7 @@ class OrionHead(AnchorFreeHead):
+         if self.training and self.with_dn:
+             targets = [torch.cat((img_meta['gt_bboxes_3d']._data.gravity_center, img_meta['gt_bboxes_3d']._data.tensor[:, 3:]),dim=1) for img_meta in img_metas ]
+             labels = [img_meta['gt_labels_3d']._data for img_meta in img_metas ]
+-            known = [(torch.ones_like(t)).cuda() for t in labels]
++            known = [torch.ones_like(t) for t in labels]
+             know_idx = known
+             unmask_bbox = unmask_label = torch.cat(known)
+             #gt_num
+@@ -1636,8 +1636,8 @@ class OrionHead(AnchorFreeHead):
+                         min_score, max_score = nms_thr
+                         nms_thr = np.random.rand()*(max_score - min_score) + min_score
+                     selected = nms_gpu(
+-                        boxes_for_nms.cuda(),
+-                        scores_for_nms.cuda(),
++                        boxes_for_nms,
++                        scores_for_nms,
+                         thresh=nms_thr,
+                         pre_maxsize=self.class_agnostic_nms['pre_max_size'],
+                         post_max_size=self.class_agnostic_nms['post_max_size'])
+@@ -1733,8 +1733,8 @@ class OrionHead(AnchorFreeHead):
+                         min_score, max_score = nms_thr
+                         nms_thr = np.random.rand()*(max_score - min_score) + min_score
+                     selected = nms_gpu(
+-                        boxes_for_nms.cuda(),
+-                        scores_for_nms.cuda(),
++                        boxes_for_nms,
++                        scores_for_nms,
+                         thresh=nms_thr,
+                         pre_maxsize=self.class_agnostic_nms['pre_max_size'],
+                         post_max_size=self.class_agnostic_nms['post_max_size'])
+diff --git a/mmcv/models/detectors/orion.py b/mmcv/models/detectors/orion.py
+index 63527d7..508fc94 100644
+--- a/mmcv/models/detectors/orion.py
++++ b/mmcv/models/detectors/orion.py
+@@ -565,7 +565,7 @@ class Orion(MVXTwoStageDetector):
+                 vision_embeded = torch.cat([vision_embeded_obj, vision_embeded_map], dim=1) # (1, 513, 4096)
+                 vlm_loss, ego_feature = self.lm_head(input_ids=input_ids, attention_mask=vlm_attn_mask, labels=vlm_labels, images=vision_embeded, use_cache=False, return_ego_feature=True)
+                 if self.mix_qa_training:
+-                    dummy_ego_feature = self.lm_head.get_model().embed_tokens(torch.tensor([[self.lm_head.config.waypoint_token_idx] for _ in range(B)]).cuda())
++                    dummy_ego_feature = self.lm_head.get_model().embed_tokens(torch.tensor([[self.lm_head.config.waypoint_token_idx] for _ in range(B)]).to(self.lm_head.device))
+                     dummy_ego_feature = dummy_ego_feature.squeeze(1)
+                     valid_input_mask = (input_ids == self.lm_head.config.waypoint_token_idx).sum(dim=-1).to(torch.bool)
+                     dummy_ego_feature[valid_input_mask] = ego_feature
+diff --git a/mmcv/models/utils/attention.py b/mmcv/models/utils/attention.py
+index 66d589f..c00f238 100644
+--- a/mmcv/models/utils/attention.py
++++ b/mmcv/models/utils/attention.py
+@@ -60,7 +60,10 @@ class FlashAttention(nn.Module):
+             key_padding_mask: a bool tensor of shape (B, S)
+         """
+         assert q.dtype in [torch.float16, torch.bfloat16] and kv.dtype in [torch.float16, torch.bfloat16]
+-        assert q.is_cuda and kv.is_cuda
++        # MUSA exposes the same accelerated tensor contract as CUDA; the SDPA-backed
++        # shim runs on either device, so accept any accelerator here.
++        assert q.device.type in ('cuda', 'musa', 'privateuseone') and \
++            kv.device.type in ('cuda', 'musa', 'privateuseone')
+         assert q.shape[0] == kv.shape[0] and q.shape[-2] == kv.shape[-2] and q.shape[-1] == kv.shape[-1]
+ 
+         batch_size = q.shape[0]
+diff --git a/mmcv/models/utils/grid_mask.py b/mmcv/models/utils/grid_mask.py
+index 2986e52..07afe24 100644
+--- a/mmcv/models/utils/grid_mask.py
++++ b/mmcv/models/utils/grid_mask.py
+@@ -111,12 +111,13 @@ class GridMask(nn.Module):
+         mask = np.asarray(mask)
+         mask = mask[(hh-h)//2:(hh-h)//2+h, (ww-w)//2:(ww-w)//2+w]
+ 
+-        mask = torch.from_numpy(mask).to(x.dtype).cuda()
++        mask = torch.from_numpy(mask).to(device=x.device, dtype=x.dtype)
+         if self.mode == 1:
+             mask = 1-mask
+         mask = mask.expand_as(x)
+         if self.offset:
+-            offset = torch.from_numpy(2 * (np.random.rand(h,w) - 0.5)).to(x.dtype).cuda()
++            offset = torch.from_numpy(2 * (np.random.rand(h,w) - 0.5)).to(
++                device=x.device, dtype=x.dtype)
+             x = x * mask + offset * (1 - mask)
+         else:
+             x = x * mask 

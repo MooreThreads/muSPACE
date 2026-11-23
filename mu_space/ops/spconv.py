@@ -116,21 +116,27 @@ def _vectorized_indice_pairs(
         valid_matrix = valid_flat.reshape(indices.shape[0], kernel_volume)
         traversal_keys = key_matrix.transpose(0, 1).reshape(-1)
         traversal_valid = valid_matrix.transpose(0, 1).reshape(-1)
-        unique_keys, inverse = torch.unique(traversal_keys[traversal_valid], sorted=True, return_inverse=True)
+        unique_keys, inverse = torch.unique(
+            traversal_keys[traversal_valid], sorted=True, return_inverse=True
+        )
         # ``torch.unique`` returns key-sorted values on accelerator backends,
         # while the legacy host rulebook exposes each output on its first
         # encounter in kernel-major/input-major traversal.  Restore that public
         # row order and remap every pair's output index to the reordered rows.
         valid_positions = torch.arange(inverse.numel(), device=device, dtype=torch.int64)
         first_positions = torch.full_like(unique_keys, valid_positions.numel(), dtype=torch.int64)
-        first_positions.scatter_reduce_(0, inverse, valid_positions, reduce="amin", include_self=True)
+        first_positions.scatter_reduce_(
+            0, inverse, valid_positions, reduce="amin", include_self=True
+        )
         first_order = first_positions.argsort(stable=True)
         remap = torch.empty_like(first_order)
-        remap[first_order] = torch.arange(first_order.numel(), device=device, dtype=first_order.dtype)
+        remap[first_order] = torch.arange(
+            first_order.numel(), device=device, dtype=first_order.dtype
+        )
         output_ids = torch.zeros_like(output_keys)
-        output_ids[valid_flat] = remap[
-            torch.searchsorted(unique_keys, output_keys[valid_flat])
-        ].to(output_ids.dtype)
+        output_ids[valid_flat] = remap[torch.searchsorted(unique_keys, output_keys[valid_flat])].to(
+            output_ids.dtype
+        )
         unique_keys = unique_keys[first_order]
         outids = indices.new_empty((unique_keys.numel(), 4))
         outids[:, 0] = torch.div(unique_keys, volume, rounding_mode="floor").to(torch.int32)
@@ -332,6 +338,28 @@ def _pair_counts(indice_pair_num: torch.Tensor) -> list[int]:
     return [int(x) for x in indice_pair_num.detach().to("cpu").reshape(-1).tolist()]
 
 
+def _center_pairs_are_identity(
+    indice_pairs: torch.Tensor, center: int, count: int, rows: int
+) -> bool:
+    """True when the centre offset's rulebook maps every row onto its own output row.
+
+    ``subm`` shortcuts the centre offset to ``features @ filters[center]`` and
+    skips it in the pair loop.  That is only the same sum when the rulebook of
+    that offset is the identity: duplicate input coordinates make the rulebook
+    keep one pair per distinct coordinate, so the shortcut would add
+    contributions the pair-based kernels do not and the CPU path would disagree
+    with the device path.
+    """
+    if count != rows:
+        return False
+    ids = indice_pairs[center, 0, :count]
+    outs = indice_pairs[center, 1, :count]
+    rows_index = torch.arange(rows, dtype=ids.dtype, device=ids.device)
+    # Both sides have to be the identity: the shortcut adds ``features[i]`` straight
+    # into output row ``i``, while the pair loop would send it to ``outs[i]``.
+    return bool(torch.equal(ids, rows_index) and torch.equal(outs, rows_index))
+
+
 def _gather_gemm_scatter_conv(
     features: torch.Tensor,
     weights: torch.Tensor,
@@ -345,7 +373,7 @@ def _gather_gemm_scatter_conv(
 
     Mirrors ``spconv_ops.h::indiceConv``. SubM center offset (the kernel index
     with the largest pair count) is a direct ``features @ filters[center]``
-    and skips gather/scatter for that offset.
+    and skips gather/scatter for that offset when its rulebook is the identity.
     """
     output = features.new_zeros((int(num_activate_out), weights.shape[-1]))
     if not pair_counts or max(pair_counts) <= 0:
@@ -355,15 +383,22 @@ def _gather_gemm_scatter_conv(
     gather_plane = 0 if not inverse else 1
     scatter_plane = 1 if not inverse else 0
     center = max(range(kernel_volume), key=lambda i: pair_counts[i])
+    shortcut = (
+        subm
+        and pair_counts[center] > 0
+        and _center_pairs_are_identity(
+            indice_pairs, center, pair_counts[center], int(features.shape[0])
+        )
+    )
 
     with _tf32_matmul(features.dtype):
-        if subm and pair_counts[center] > 0:
+        if shortcut:
             # Not the ``out=`` form: it would be an in-place write on a leaf of
             # the autograd graph when this path is called with requires_grad.
             output = output + torch.mm(features, weights[center])
         for kernel_index in range(kernel_volume):
             count = pair_counts[kernel_index]
-            if count <= 0 or (subm and kernel_index == center):
+            if count <= 0 or (shortcut and kernel_index == center):
                 continue
             input_ids = indice_pairs[kernel_index, gather_plane, :count].long()
             output_ids = indice_pairs[kernel_index, scatter_plane, :count].long()
@@ -391,15 +426,22 @@ def _gather_gemm_scatter_conv_backward(
     gather_plane = 0 if not inverse else 1
     scatter_plane = 1 if not inverse else 0
     center = max(range(kernel_volume), key=lambda i: pair_counts[i])
+    shortcut = (
+        subm
+        and pair_counts[center] > 0
+        and _center_pairs_are_identity(
+            indice_pairs, center, pair_counts[center], int(features.shape[0])
+        )
+    )
     grad_output = grad_output.contiguous()
 
     with _tf32_matmul(features.dtype):
-        if subm and pair_counts[center] > 0:
+        if shortcut:
             grad_weights[center].add_(features.transpose(0, 1).matmul(grad_output))
             grad_features.add_(grad_output.matmul(weights[center].transpose(0, 1)))
         for kernel_index in range(kernel_volume):
             count = pair_counts[kernel_index]
-            if count <= 0 or (subm and kernel_index == center):
+            if count <= 0 or (shortcut and kernel_index == center):
                 continue
             input_ids = indice_pairs[kernel_index, gather_plane, :count].long()
             output_ids = indice_pairs[kernel_index, scatter_plane, :count].long()
@@ -484,9 +526,9 @@ def _native_gather_gemm_scatter_conv(
             # Autocast can downcast GEMM independently of the sparse feature
             # buffer.  Native scatter is selected from ``features.dtype`` and
             # therefore requires its input buffer to use that same dtype.
-            values = torch.bmm(
-                buffer.view(span, capacity, channels_in), weights[start:stop]
-            ).to(features.dtype)
+            values = torch.bmm(buffer.view(span, capacity, channels_in), weights[start:stop]).to(
+                features.dtype
+            )
             scatter_add(
                 values.reshape(span * capacity, channels_out),
                 pairs_chunk,

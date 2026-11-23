@@ -5,7 +5,9 @@
 `mu_space.ops.temporal_align` replaces the per-sample `torchvision.transforms.functional.rotate`
 loop that BEV temporal alignment runs in BEVFormer-style pipelines. One BEV plane per sample is
 rotated about a per-sample pixel centre, optionally translated, and resampled with bilinear or
-nearest filtering; gradients are scattered back onto the source plane.
+nearest filtering; gradients are scattered back onto the source plane. Nearest filtering follows
+PyTorch `F.grid_sample`, including the half-pixel tie: the source position is normalised and
+unnormalised again in float32 before it is rounded, so a tie picks the same tap as the reference.
 
 The measured region is the operator boundary, not the kernel: one call with a channels-first BEV
 tensor, autograd enabled and wrapper validation included. The native kernels read and write that
@@ -171,7 +173,12 @@ into one iteration, so the candidate test is paid once for both, took it to 1.57
 
 - Every published row reports a speedup of at least 1.00x.
 - `python -m pytest tests/ops/test_temporal_align.py` passes, including the acceptance angles, the
-  out-of-bounds and non-square planes, and the illegal-input cases.
+  out-of-bounds and non-square planes, the illegal-input cases, and the half-pixel nearest ties that
+  pin the `F.grid_sample` tie-break.
+- A non-finite `angle` or float `shift` is rejected with a `ValueError` when the geometry tensor
+  lives on the host, which covers the reference path. A device tensor is not scanned, because that
+  costs a synchronization per call; the native path treats non-finite geometry as undefined and
+  samples no tap.
 - `python benchmarks/check_benchmarks.py --check` reports no findings for this directory.
 - Re-running the commands in [Run](#run) on an idle device reproduces each median within five
   percent; a larger deviation means the device was shared or throttled, not that the row moved.

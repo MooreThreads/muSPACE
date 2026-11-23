@@ -1,0 +1,33 @@
+diff --git a/mmcv/core/bbox/structures/base_box3d.py b/mmcv/core/bbox/structures/base_box3d.py
+index a09caf4..bd4635d 100644
+--- a/mmcv/core/bbox/structures/base_box3d.py
++++ b/mmcv/core/bbox/structures/base_box3d.py
+@@ -5,7 +5,11 @@ from abc import abstractmethod
+ 
+ # from mmcv.ops.iou3d import iou3d_cuda
+ from .utils import limit_period, xywhr2xyxyr
+-from mmcv.ops.iou3d_det import iou3d_cuda
++try:
++    from mmcv.ops.iou3d_det import iou3d_cuda
++except ImportError:  # compiled extension unavailable
++    from mmcv.utils.ext_loader import MissingExtension
++    iou3d_cuda = MissingExtension('ops.iou3d_det.iou3d_cuda')
+ 
+ 
+ class BaseInstance3DBoxes(object):
+diff --git a/mmcv/ops/iou3d_det/iou3d_utils.py b/mmcv/ops/iou3d_det/iou3d_utils.py
+index 6f36019..27046b6 100644
+--- a/mmcv/ops/iou3d_det/iou3d_utils.py
++++ b/mmcv/ops/iou3d_det/iou3d_utils.py
+@@ -1,6 +1,10 @@
+ import torch
+ 
+-from . import iou3d_cuda
++try:
++    from . import iou3d_cuda
++except ImportError:  # compiled extension unavailable
++    from mmcv.utils.ext_loader import MissingExtension
++    iou3d_cuda = MissingExtension('ops.iou3d_det.iou3d_cuda')
+ 
+ 
+ def boxes_iou_bev(boxes_a, boxes_b):

@@ -73,17 +73,41 @@ __device__ __forceinline__ bool rect_cross(const Point& p1, const Point& p2,
          fminf(q1.y, q2.y) <= fmaxf(p1.y, p2.y);
 }
 
-__device__ __forceinline__ bool in_box(const float* box, float c, float s,
+// The containment window of one box, expressed in that box's own frame and
+// including the tolerance.  Building it once per box keeps the per-corner path to
+// four comparisons.
+struct BoxFrame {
+  float cx;
+  float cy;
+  float x0;
+  float x1;
+  float y0;
+  float y1;
+};
+
+__device__ __forceinline__ BoxFrame box_frame(const float* box) {
+  const float cx     = (box[0] + box[2]) * 0.5f;
+  const float cy     = (box[1] + box[3]) * 0.5f;
+  const float half_w = (box[2] - box[0]) * 0.5f;
+  const float half_h = (box[3] - box[1]) * 0.5f;
+  // The tolerance has to scale with the box.  An absolute epsilon stops doing its
+  // job as soon as ulp(coordinate) / 2 exceeds it, i.e. well inside the coordinate
+  // range the operator contract allows.
+  const float margin = 1e-5f * fmaxf(1.0f, fmaxf(fabsf(half_w), fabsf(half_h)));
+  return BoxFrame{cx, cy, -half_w - margin, half_w + margin, -half_h - margin, half_h + margin};
+}
+
+__device__ __forceinline__ bool in_box(const BoxFrame& frame, float c, float s,
                                        const Point& point) {
-  const float cx = (box[0] + box[2]) * 0.5f;
-  const float cy = (box[1] + box[3]) * 0.5f;
-  const float dx = point.x - cx;
-  const float dy = point.y - cy;
-  const float x = dx * c - dy * s + cx;
-  const float y = dx * s + dy * c + cy;
-  constexpr float margin = 1e-5f;
-  return x > box[0] - margin && x < box[2] + margin &&
-         y > box[1] - margin && y < box[3] + margin;
+  const float dx = point.x - frame.cx;
+  const float dy = point.y - frame.cy;
+  // Box-local coordinates: the rotated point is compared in the box's own
+  // frame, so the large centre coordinate is never added back.  Adding it used
+  // to round a corner that sits exactly on the boundary onto the boundary
+  // itself, which rejected the corner and collapsed the overlap to zero.
+  const float x = dx * c - dy * s;
+  const float y = dx * s + dy * c;
+  return x > frame.x0 && x < frame.x1 && y > frame.y0 && y < frame.y1;
 }
 
 __device__ __forceinline__ bool intersection(const Point& p1, const Point& p0,
@@ -117,6 +141,8 @@ __device__ float overlap_area(const float* box_a, float ac, float as,
                        (box_a[1] + box_a[3]) * 0.5f);
   const Point center_b((box_b[0] + box_b[2]) * 0.5f,
                        (box_b[1] + box_b[3]) * 0.5f);
+  const BoxFrame frame_a = box_frame(box_a);
+  const BoxFrame frame_b = box_frame(box_b);
   Point a[5] = {Point(box_a[0], box_a[1]), Point(box_a[2], box_a[1]),
                 Point(box_a[2], box_a[3]), Point(box_a[0], box_a[3])};
   Point b[5] = {Point(box_b[0], box_b[1]), Point(box_b[2], box_b[1]),
@@ -141,11 +167,11 @@ __device__ float overlap_area(const float* box_a, float ac, float as,
     }
   }
   for (int i = 0; i < 4; ++i) {
-    if (in_box(box_a, ac, as, b[i])) {
+    if (in_box(frame_a, ac, as, b[i])) {
       points[count++] = b[i];
       center = center + b[i];
     }
-    if (in_box(box_b, bc, bs, a[i])) {
+    if (in_box(frame_b, bc, bs, a[i])) {
       points[count++] = a[i];
       center = center + a[i];
     }
